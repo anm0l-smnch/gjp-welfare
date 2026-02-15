@@ -52,7 +52,7 @@ def abbrev(name):
 DEFAULT_PARAMS = {
     "T": 5840.0,
     "sigma": 1.0,
-    "r": 1.6,
+    "r": 2.0,
     "phi": 12.0,
     "gamma_raw": 13.33,
     "epsilon": 0.8,
@@ -305,23 +305,44 @@ def main():
 
         st.divider()
         st.subheader("Parameters")
-        r_val = st.slider("Discount rate r (%)", 0.5, 6.0, DEFAULT_PARAMS["r"], 0.1)
+
+        # Initialise session state with defaults (on first run)
+        _slider_keys = {
+            "sl_r": DEFAULT_PARAMS["r"],
+            "sl_sigma": DEFAULT_PARAMS["sigma"],
+            "sl_epsilon": DEFAULT_PARAMS["epsilon"],
+            "sl_T": int(DEFAULT_PARAMS["T"]),
+            "sl_phi": DEFAULT_PARAMS["phi"],
+            "sl_gamma": DEFAULT_PARAMS["gamma_raw"],
+        }
+        for k, v in _slider_keys.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
+
+        def _reset_params():
+            for k, v in _slider_keys.items():
+                st.session_state[k] = v
+
+        r_val = st.slider("Discount rate r (%)", 0.5, 6.0, step=0.1, key="sl_r")
 
         if spec_key == "additive":
             sigma_val = st.slider("Leisure curvature \u03C3", -1.0, 3.0,
-                                  DEFAULT_PARAMS["sigma"], 0.1)
+                                  step=0.1, key="sl_sigma")
             epsilon_val = DEFAULT_PARAMS["epsilon"]
         else:
             sigma_val = DEFAULT_PARAMS["sigma"]
             epsilon_val = st.slider("CES elasticity \u03B5", 0.2, 2.0,
-                                    DEFAULT_PARAMS["epsilon"], 0.1)
+                                    step=0.1, key="sl_epsilon")
 
         T_val = st.slider("Time endowment T (hrs/yr)", 4000, 8760,
-                          int(DEFAULT_PARAMS["T"]), 10)
+                          step=10, key="sl_T")
         phi_val = st.slider("Output damage (%/\u00B0C)", 0.0, 30.0,
-                            DEFAULT_PARAMS["phi"], 1.0)
+                            step=1.0, key="sl_phi")
         gamma_val = st.slider("Well-being damage (%/\u00B0C)", 0.0, 30.0,
-                              DEFAULT_PARAMS["gamma_raw"], 1.0)
+                              step=1.0, key="sl_gamma")
+
+        st.button("Reset Parameters", on_click=_reset_params,
+                  use_container_width=True)
 
         params = {
             "T": float(T_val), "sigma": sigma_val, "r": r_val,
