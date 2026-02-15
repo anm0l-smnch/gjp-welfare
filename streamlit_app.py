@@ -49,8 +49,10 @@ def abbrev(name):
 
 
 # ── Default parameters ──────────────────────────────────────────
+FIXED_T = 4000.0  # fixed time endowment (hrs/yr) — not user-adjustable
+
 DEFAULT_PARAMS = {
-    "T": 5840.0,
+    "T": FIXED_T,
     "sigma": 1.0,
     "r": 2.0,
     "phi": 12.0,
@@ -311,7 +313,6 @@ def main():
             "sl_r": DEFAULT_PARAMS["r"],
             "sl_sigma": DEFAULT_PARAMS["sigma"],
             "sl_epsilon": DEFAULT_PARAMS["epsilon"],
-            "sl_T": int(DEFAULT_PARAMS["T"]),
             "sl_phi": DEFAULT_PARAMS["phi"],
             "sl_gamma": DEFAULT_PARAMS["gamma_raw"],
         }
@@ -334,8 +335,6 @@ def main():
             epsilon_val = st.slider("CES elasticity \u03B5", 0.2, 2.0,
                                     step=0.1, key="sl_epsilon")
 
-        T_val = st.slider("Time endowment T (hrs/yr)", 4000, 8760,
-                          step=10, key="sl_T")
         phi_val = st.slider("Output damage (%/\u00B0C)", 0.0, 30.0,
                             step=1.0, key="sl_phi")
         gamma_val = st.slider("Well-being damage (%/\u00B0C)", 0.0, 30.0,
@@ -345,7 +344,7 @@ def main():
                   use_container_width=True)
 
         params = {
-            "T": float(T_val), "sigma": sigma_val, "r": r_val,
+            "T": FIXED_T, "sigma": sigma_val, "r": r_val,
             "phi": phi_val, "gamma_raw": gamma_val, "epsilon": epsilon_val,
         }
 
@@ -614,7 +613,6 @@ def main():
             "phi": ("Output damage (%/\u00B0C)", np.arange(0.0, 31.0, 3.0)),
             "gamma_raw": ("Well-being damage (%/\u00B0C)", np.arange(0.0, 31.0, 3.0)),
             "epsilon": ("CES elasticity \u03B5", np.arange(0.2, 2.1, 0.2)),
-            "T": ("Time endowment T", np.arange(4000, 8800, 400)),
         }
 
         col_x, col_y = st.columns(2)
@@ -880,9 +878,9 @@ def main():
                 "Well-being damage",
             ],
             "Default": [
-                "1.6%/yr",
+                "2.0%/yr",
                 "1.0" if spec_key == "additive" else "0.8",
-                "5,840 hrs (16h/day × 365)",
+                "4,000 hrs (fixed)",
                 "12%/°C (Bilal & Känzig 2026)",
                 "13.3%/°C (Dietrich & Nichols 2025)",
             ],
