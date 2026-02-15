@@ -534,10 +534,11 @@ def main():
                                   showlegend=False),
                       row=2, col=2)
 
-        fig.update_layout(
-            **_plotly_layout(f"Welfare Analysis — {region}", height=650),
-            legend=dict(x=0.01, y=0.99, xanchor="left", yanchor="top"),
-        )
+        layout_opts = _plotly_layout(f"Welfare Analysis — {region}", height=650)
+        layout_opts["legend"] = dict(x=0.01, y=0.99, xanchor="left", yanchor="top",
+                                     bgcolor="rgba(255,255,255,0.9)",
+                                     bordercolor="#DDDDDD", borderwidth=1, font=dict(size=10))
+        fig.update_layout(**layout_opts)
         fig.update_yaxes(title_text="Consumption", row=1, col=1)
         fig.update_yaxes(title_text="Hours", row=1, col=2)
         fig.update_yaxes(title_text="u(t)", row=2, col=1)
