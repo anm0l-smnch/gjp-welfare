@@ -582,24 +582,34 @@ def main():
         } for r in all_region_results])
         st.dataframe(reg_df, use_container_width=True, hide_index=True)
 
-        # Bar chart
+        # Bar chart — Consumption Equivalent (%)
+        ce_values = [r.get("CE_pct", 0) for r in all_region_results]
+        ce_colours = [COLOUR_SC if v >= 0 else COLOUR_PC for v in ce_values]
         fig_reg = go.Figure()
         fig_reg.add_trace(go.Bar(
             x=[abbrev(r["Region"]) for r in all_region_results],
-            y=[r.get("SC_welfare", 0) for r in all_region_results],
-            name="SC", marker_color=COLOUR_SC,
-        ))
-        fig_reg.add_trace(go.Bar(
-            x=[abbrev(r["Region"]) for r in all_region_results],
-            y=[r.get("PC_welfare", 0) for r in all_region_results],
-            name="PC", marker_color=COLOUR_PC,
+            y=ce_values,
+            marker_color=ce_colours,
+            text=[f"{v:+.1f}%" for v in ce_values],
+            textposition="outside",
+            textfont=dict(size=11),
+            showlegend=False,
         ))
         fig_reg.update_layout(
-            **_plotly_layout("Lifetime Welfare by Region", height=450),
-            barmode="group",
+            **_plotly_layout("Consumption Equivalent by Region (SC vs PC)", height=450),
         )
-        fig_reg.update_yaxes(title_text="Lifetime Welfare")
+        fig_reg.update_yaxes(title_text="Consumption Equivalent (%)",
+                             zeroline=True, zerolinewidth=1.5, zerolinecolor="#888888")
         st.plotly_chart(fig_reg, use_container_width=True)
+
+        st.info(
+            "**How to read this chart:** The consumption equivalent (CE) measures the "
+            "permanent percentage change in consumption that an individual living under PC "
+            "would need *every year* to be as well off as under SC. A CE of +10% means SC "
+            "delivers the same welfare as PC would if PC\u2019s consumption were permanently "
+            "raised by 10%. Positive values (teal) indicate SC is welfare-superior; negative "
+            "values (coral) would indicate PC is welfare-superior."
+        )
 
     # ────────────────────────────────────────────────────────────
     # TAB 4: SENSITIVITY
