@@ -559,7 +559,7 @@ def main():
                                      bgcolor="rgba(255,255,255,0.9)",
                                      bordercolor="#DDDDDD", borderwidth=1, font=dict(size=10))
         fig.update_layout(**layout_opts)
-        fig.update_yaxes(title_text="Consumption", row=1, col=1)
+        fig.update_yaxes(title_text="Consumption (2025 Euro PPP)", row=1, col=1)
         fig.update_yaxes(title_text="Hours", row=1, col=2)
         fig.update_yaxes(title_text="u(t)", row=2, col=1)
         fig.update_yaxes(title_text="\u0394T (\u00B0C)", row=2, col=2)
