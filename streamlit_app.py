@@ -121,8 +121,11 @@ def calibrate_chi(c0, h0, T, sigma):
     return (ell0 ** sigma) / h0
 
 
-def effective_consumption(c, delta_T, phi, gamma):
-    return c * np.exp(-(phi + gamma) * delta_T)
+def effective_consumption(c, delta_T, phi, gamma, damage_type="exponential"):
+    coeff = phi + gamma
+    if damage_type == "quadratic":
+        return c * np.maximum(1.0 - coeff * delta_T ** 2, 0.0)
+    return c * np.exp(-coeff * delta_T)
 
 
 def period_utility_additive(c_hat, h, T, sigma, chi):
@@ -166,6 +169,7 @@ def compute_welfare(df, params, spec="additive"):
     gamma = param_to_coeff(params["gamma_raw"])
     epsilon = params["epsilon"]
     beta = 1.0 / (1.0 + r)
+    damage_type = params.get("damage_type", "exponential")
 
     years = df["Year"].values
     c = df["Consumption"].values
@@ -175,12 +179,13 @@ def compute_welfare(df, params, spec="additive"):
     n = len(years)
     t_idx = np.arange(n)
 
-    c_hat = effective_consumption(c, dT, phi, gamma)
+    c_hat = effective_consumption(c, dT, phi, gamma, damage_type)
     c_no_damage = c.copy()
     c0, h0 = c[0], h[0]
 
     if spec == "additive":
-        chi = calibrate_chi(c0, h0, T, sigma)
+        chi_override = params.get("chi_override", None)
+        chi = chi_override if chi_override is not None else calibrate_chi(c0, h0, T, sigma)
         u = np.array([period_utility_additive(c_hat[i], h[i], T, sigma, chi)
                        for i in range(n)])
         u_no_damage = np.array([period_utility_additive(c_no_damage[i], h[i], T, sigma, chi)
@@ -315,14 +320,21 @@ def main():
             "sl_epsilon": DEFAULT_PARAMS["epsilon"],
             "sl_phi": DEFAULT_PARAMS["phi"],
             "sl_gamma": DEFAULT_PARAMS["gamma_raw"],
+            "sl_chi": 4.0,
         }
         for k, v in _slider_keys.items():
             if k not in st.session_state:
                 st.session_state[k] = v
+        if "chi_mode" not in st.session_state:
+            st.session_state["chi_mode"] = "Calibrate from 2025 data"
+        if "damage_type" not in st.session_state:
+            st.session_state["damage_type"] = "Exponential"
 
         def _reset_params():
             for k, v in _slider_keys.items():
                 st.session_state[k] = v
+            st.session_state["chi_mode"] = "Calibrate from 2025 data"
+            st.session_state["damage_type"] = "Exponential"
 
         r_val = st.slider("Discount rate r (%)", 0.5, 6.0, step=0.1, key="sl_r")
 
@@ -330,10 +342,32 @@ def main():
             sigma_val = st.slider("Leisure curvature \u03C3", -1.0, 3.0,
                                   step=0.1, key="sl_sigma")
             epsilon_val = DEFAULT_PARAMS["epsilon"]
+
+            chi_mode = st.radio("Leisure weight \u03C7",
+                                ["Calibrate from 2025 data", "Set manually"],
+                                horizontal=True, key="chi_mode")
+            chi_override = None
+            if chi_mode == "Set manually":
+                chi_override = st.slider("Leisure weight \u03C7", 0.5, 10.0,
+                                         step=0.1, key="sl_chi")
+            else:
+                st.caption("\u03C7 = \u2113\u2080\u1D9E / h\u2080 (calibrated per region)")
         else:
             sigma_val = DEFAULT_PARAMS["sigma"]
             epsilon_val = st.slider("CES elasticity \u03B5", 0.2, 2.0,
                                     step=0.1, key="sl_epsilon")
+            chi_override = None
+
+        st.divider()
+        st.subheader("Damage Function")
+        damage_type_label = st.radio("Damage specification",
+                                     ["Exponential", "Quadratic"],
+                                     horizontal=True, key="damage_type")
+        damage_type = damage_type_label.lower()
+        if damage_type == "exponential":
+            st.caption("\u0109 = c \u00B7 exp[\u2013(\u03C6+\u03B3)\u00B7\u0394T]")
+        else:
+            st.caption("\u0109 = c \u00B7 max(1 \u2013 (\u03C6+\u03B3)\u00B7\u0394T\u00B2, 0)")
 
         phi_val = st.slider("Output damage (%/\u00B0C)", 0.0, 30.0,
                             step=1.0, key="sl_phi")
@@ -346,6 +380,7 @@ def main():
         params = {
             "T": FIXED_T, "sigma": sigma_val, "r": r_val,
             "phi": phi_val, "gamma_raw": gamma_val, "epsilon": epsilon_val,
+            "damage_type": damage_type, "chi_override": chi_override,
         }
 
         st.divider()
@@ -491,7 +526,13 @@ def main():
 
         param_str = (f"r={params['r']:.1f}%,  \u03C3={params['sigma']:.1f},  "
                      f"T={params['T']:.0f}h,  output damage={params['phi']:.1f}%/\u00B0C,  "
-                     f"well-being damage={params['gamma_raw']:.1f}%/\u00B0C")
+                     f"well-being damage={params['gamma_raw']:.1f}%/\u00B0C,  "
+                     f"damage fn={params.get('damage_type', 'exponential')}")
+        if spec_key == "additive":
+            if params.get("chi_override") is not None:
+                param_str += f",  \u03C7={params['chi_override']:.1f} (manual)"
+            else:
+                param_str += ",  \u03C7=calibrated"
         if spec_key == "ces":
             param_str += f",  \u03B5={params['epsilon']:.1f}"
         st.caption(f"Parameters: {param_str}")
@@ -825,15 +866,25 @@ def main():
 
         # 2. Climate Damage Wedge
         st.markdown("### 2. Climate Damage Wedge")
+        st.markdown("**Exponential (default):**")
         st.latex(r"\hat{c}_t = c_t \cdot \exp\!\left(-(\varphi + \gamma) \cdot \Delta T_t\right)")
+        st.markdown("**Quadratic (alternative):**")
+        st.latex(r"\hat{c}_t = c_t \cdot \max\!\left(1 - (\varphi + \gamma) \cdot \Delta T_t^{\,2},\; 0\right)")
         st.markdown("""
 - $c_t$ = raw consumption from scenario data
 - $\\Delta T_t$ = cumulative temperature change (summed from annual increments)
 - $\\varphi$ = output damage (default 12%/°C, Bilal & Känzig 2026)
 - $\\gamma$ = well-being damage (default 13.3%/°C, Dietrich & Nichols 2025)
+- The exponential form is **concave** in $\\Delta T$ (each additional degree does proportionally less damage)
+- The quadratic form is **convex** in $\\Delta T$ (each additional degree does proportionally more damage), better capturing tipping points and tail risks
 """)
-        st.info("**Example:** With total damage = 25.3%/°C and ΔT = 2°C: "
-                "effective consumption = exp(−0.253 × 2) ≈ 60% of raw.")
+        if params.get("damage_type") == "quadratic":
+            st.info("**Example (quadratic):** With total damage = 25.3%/°C² and ΔT = 2°C: "
+                    "effective consumption = max(1 − 0.253 × 4, 0) ≈ 0% of raw. "
+                    "Note: quadratic damages are very severe at high warming.")
+        else:
+            st.info("**Example (exponential):** With total damage = 25.3%/°C and ΔT = 2°C: "
+                    "effective consumption = exp(−0.253 × 2) ≈ 60% of raw.")
 
         st.markdown("---")
 
@@ -841,9 +892,16 @@ def main():
         st.markdown("### 3. Calibration")
         if spec_key == "additive":
             st.latex(r"\text{MRS} = \chi \cdot c_0 \cdot \ell_0^{-\sigma} = \frac{c_0}{h_0} \quad \Rightarrow \quad \chi = \frac{\ell_0^{\,\sigma}}{h_0}")
+            st.markdown(
+                "By default, $\\chi$ is calibrated separately per region from 2025 baseline data. "
+                "A key advantage is that $\\chi$ depends only on the time allocation, "
+                "not on consumption levels.\n\n"
+                "Alternatively, $\\chi$ can be set manually to a common value across all regions, "
+                "which imposes identical preferences everywhere."
+            )
         else:
             st.latex(r"\text{MRS} = \frac{1-\alpha}{\alpha}\left(\frac{c_0}{\ell_0}\right)^{1/\varepsilon} = \frac{c_0}{h_0} \quad \Rightarrow \quad \alpha = \frac{1}{1 + (c_0/h_0) \cdot (\ell_0/c_0)^{1/\varepsilon}}")
-        st.markdown("Calibrated separately per region from 2025 baseline data.")
+            st.markdown("Calibrated separately per region from 2025 baseline data.")
 
         st.markdown("---")
 
@@ -877,24 +935,30 @@ def main():
 
         # 7. Parameter Reference
         st.markdown("### 7. Parameter Reference")
-        param_ref = {
-            "Symbol": ["r", "\u03C3" if spec_key == "additive" else "\u03B5",
-                        "T", "\u03C6", "\u03B3"],
-            "Parameter": [
-                "Social discount rate",
-                "Leisure curvature (CRRA)" if spec_key == "additive" else "CES elasticity",
-                "Annual time endowment",
-                "Output damage",
-                "Well-being damage",
-            ],
-            "Default": [
-                "2.0%/yr",
-                "1.0" if spec_key == "additive" else "0.8",
-                "4,000 hrs (fixed)",
-                "12%/°C (Bilal & Känzig 2026)",
-                "13.3%/°C (Dietrich & Nichols 2025)",
-            ],
-        }
+        symbols = ["r", "\u03C3" if spec_key == "additive" else "\u03B5",
+                    "T", "\u03C6", "\u03B3"]
+        param_names = [
+            "Social discount rate",
+            "Leisure curvature (CRRA)" if spec_key == "additive" else "CES elasticity",
+            "Annual time endowment",
+            "Output damage",
+            "Well-being damage",
+        ]
+        defaults = [
+            "2.0%/yr",
+            "1.0" if spec_key == "additive" else "0.8",
+            "4,000 hrs (fixed)",
+            "12%/\u00B0C (Bilal & K\u00E4nzig 2026)",
+            "13.3%/\u00B0C (Dietrich & Nichols 2025)",
+        ]
+        if spec_key == "additive":
+            symbols.append("\u03C7")
+            param_names.append("Leisure weight")
+            defaults.append("Calibrated from 2025 MRS (or manual)")
+        symbols.append("\u2014")
+        param_names.append("Damage function")
+        defaults.append("Exponential (or Quadratic)")
+        param_ref = {"Symbol": symbols, "Parameter": param_names, "Default": defaults}
         st.dataframe(pd.DataFrame(param_ref), use_container_width=True, hide_index=True)
 
     # ── Excel Export ──
@@ -911,6 +975,8 @@ def main():
                 "OutputDamage_pctPerDegC": params["phi"],
                 "WellbeingDamage_pctPerDegC": params["gamma_raw"],
                 "CES_Epsilon": params["epsilon"],
+                "DamageFunction": params.get("damage_type", "exponential"),
+                "Chi_Override": params.get("chi_override", "calibrated"),
             }])
             param_export.to_excel(writer, sheet_name="Parameters", index=False)
         st.sidebar.download_button(
