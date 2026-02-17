@@ -124,7 +124,8 @@ def calibrate_chi(c0, h0, T, sigma):
 def effective_consumption(c, delta_T, phi, gamma, damage_type="exponential"):
     coeff = phi + gamma
     if damage_type == "quadratic":
-        return c * np.maximum(1.0 - coeff * delta_T ** 2, 0.0)
+        # DICE/Nordhaus-style: convex in ΔT, never hits zero
+        return c / (1.0 + coeff * delta_T ** 2)
     return c * np.exp(-coeff * delta_T)
 
 
@@ -367,7 +368,7 @@ def main():
         if damage_type == "exponential":
             st.caption("\u0109 = c \u00B7 exp[\u2013(\u03C6+\u03B3)\u00B7\u0394T]")
         else:
-            st.caption("\u0109 = c \u00B7 max(1 \u2013 (\u03C6+\u03B3)\u00B7\u0394T\u00B2, 0)")
+            st.caption("\u0109 = c / [1 + (\u03C6+\u03B3)\u00B7\u0394T\u00B2]  (DICE-style)")
 
         phi_val = st.slider("Output damage (%/\u00B0C)", 0.0, 30.0,
                             step=1.0, key="sl_phi")
@@ -868,20 +869,20 @@ def main():
         st.markdown("### 2. Climate Damage Wedge")
         st.markdown("**Exponential (default):**")
         st.latex(r"\hat{c}_t = c_t \cdot \exp\!\left(-(\varphi + \gamma) \cdot \Delta T_t\right)")
-        st.markdown("**Quadratic (alternative):**")
-        st.latex(r"\hat{c}_t = c_t \cdot \max\!\left(1 - (\varphi + \gamma) \cdot \Delta T_t^{\,2},\; 0\right)")
+        st.markdown("**Quadratic / DICE-style (alternative):**")
+        st.latex(r"\hat{c}_t = \frac{c_t}{1 + (\varphi + \gamma) \cdot \Delta T_t^{\,2}}")
         st.markdown("""
 - $c_t$ = raw consumption from scenario data
 - $\\Delta T_t$ = cumulative temperature change (summed from annual increments)
 - $\\varphi$ = output damage (default 12%/°C, Bilal & Känzig 2026)
 - $\\gamma$ = well-being damage (default 13.3%/°C, Dietrich & Nichols 2025)
 - The exponential form is **concave** in $\\Delta T$ (each additional degree does proportionally less damage)
-- The quadratic form is **convex** in $\\Delta T$ (each additional degree does proportionally more damage), better capturing tipping points and tail risks
+- The quadratic (DICE-style) form is **convex** in $\\Delta T$ (each additional degree does proportionally more damage), better capturing tipping points and tail risks. Damage never reaches 100%.
 """)
         if params.get("damage_type") == "quadratic":
-            st.info("**Example (quadratic):** With total damage = 25.3%/°C² and ΔT = 2°C: "
-                    "effective consumption = max(1 − 0.253 × 4, 0) ≈ 0% of raw. "
-                    "Note: quadratic damages are very severe at high warming.")
+            st.info("**Example (quadratic):** With total damage coeff = 25.3% and ΔT = 2°C: "
+                    "effective consumption = 1 / (1 + 0.253 × 4) ≈ 50% of raw. "
+                    "At 3°C: ≈ 30% of raw. Damage accelerates with warming.")
         else:
             st.info("**Example (exponential):** With total damage = 25.3%/°C and ΔT = 2°C: "
                     "effective consumption = exp(−0.253 × 2) ≈ 60% of raw.")
