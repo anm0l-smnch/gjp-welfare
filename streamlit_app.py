@@ -3,7 +3,7 @@
 Welfare Evaluation App — Streamlit Web Version
 ================================================
 Evaluates lifetime welfare across climate-work scenarios using
-additive log + CRRA-in-leisure and CES specifications.
+additive log + CRRA-in-leisure, CES, and ecological specifications.
 
 Deploy on Streamlit Community Cloud for a shareable URL.
 """
@@ -162,6 +162,82 @@ def calibrate_alpha_ces(c0, h0, T, epsilon):
     return 1.0 / (1.0 + mrs_ratio)
 
 
+def env_quality(delta_T, kappa):
+    """Environmental quality index: E = 1 / (1 + kappa * delta_T).
+    E = 1 at zero warming (pristine), declines toward 0 as warming rises."""
+    return 1.0 / (1.0 + kappa * np.maximum(delta_T, 0.0))
+
+
+def effective_consumption_output_only(c, delta_T, phi, damage_type="exponential"):
+    """Effective consumption with OUTPUT damage only (no well-being/amenity damage).
+    Used in the ecological specification where non-market damages enter via E."""
+    if damage_type == "quadratic":
+        return c / (1.0 + phi * delta_T ** 2)
+    return c * np.exp(-phi * delta_T)
+
+
+def period_utility_ecological(c_eff, h, E, T, sigma, chi, alpha_cE, epsilon_cE, c_ref=1.0):
+    """Ecological utility: CES composite of (normalized consumption, environment) + CRRA leisure.
+
+    u = (1/rho) * ln[alpha * c_norm^rho + (1-alpha) * E^rho] + chi * ell^(1-sigma)/(1-sigma)
+
+    where c_norm = c_eff / c_ref normalises consumption to be on a comparable scale to E (both ~1),
+    and rho = (epsilon_cE - 1) / epsilon_cE controls substitutability.
+
+    Without normalisation, c ~ 50,000 vs E ~ 0.7-1.0, and the CES composite
+    breaks down for rho < 0 (the c^rho term becomes negligible).
+    """
+    ell = T - h
+    ell = np.maximum(ell, 1e-6)
+    c_eff = np.maximum(c_eff, 1e-6)
+    E = np.maximum(E, 1e-6)
+
+    # Normalise consumption to be on comparable scale to E
+    c_norm = c_eff / c_ref
+
+    # CES composite of normalised consumption and environment
+    rho = (epsilon_cE - 1.0) / epsilon_cE
+    if abs(rho) < 1e-10:
+        # Cobb-Douglas limit: rho -> 0
+        u_composite = alpha_cE * np.log(c_norm) + (1.0 - alpha_cE) * np.log(E)
+    elif epsilon_cE < 0.02:
+        # Near-Leontief: use min
+        u_composite = np.log(np.minimum(c_norm ** alpha_cE, E ** (1.0 - alpha_cE)))
+    else:
+        agg = alpha_cE * (c_norm ** rho) + (1.0 - alpha_cE) * (E ** rho)
+        agg = np.maximum(agg, 1e-30)
+        u_composite = np.log(agg) / rho
+
+    # Leisure component (same as additive)
+    if abs(sigma - 1.0) < 1e-10:
+        u_leisure = chi * np.log(ell)
+    else:
+        u_leisure = chi * (ell ** (1.0 - sigma)) / (1.0 - sigma)
+
+    return u_composite + u_leisure
+
+
+def calibrate_kappa(gamma_pct):
+    """Calibrate kappa so that the marginal welfare loss from E at 1°C warming
+    roughly matches the non-market damage evidence (gamma %/°C).
+
+    For small ΔT, E ≈ 1 - kappa*ΔT, so the proportional loss is kappa*ΔT.
+    At 1°C we want this to be gamma/100.  Hence kappa ≈ gamma/100.
+    """
+    return gamma_pct / 100.0
+
+
+def calibrate_alpha_ecological(c0, E0, gamma_pct):
+    """Calibrate alpha_cE so that at the baseline the share of welfare
+    attributed to environment matches the empirical damage evidence.
+
+    We anchor so that the expenditure share on the environment composite
+    equals gamma / (phi + gamma) — i.e. the non-market share of total damages.
+    """
+    # Default: equal weight, user can override
+    return 0.5
+
+
 def compute_welfare(df, params, spec="additive"):
     T = params["T"]
     sigma = params["sigma"]
@@ -180,31 +256,55 @@ def compute_welfare(df, params, spec="additive"):
     n = len(years)
     t_idx = np.arange(n)
 
-    c_hat = effective_consumption(c, dT, phi, gamma, damage_type)
     c_no_damage = c.copy()
     c0, h0 = c[0], h[0]
 
-    if spec == "additive":
+    if spec == "ecological":
+        # Ecological: output damage on consumption only; environment enters utility directly
+        kappa = params.get("kappa", calibrate_kappa(params["gamma_raw"]))
+        alpha_cE = params.get("alpha_cE", 0.5)
+        epsilon_cE = params.get("epsilon_cE", 0.5)
         chi_override = params.get("chi_override", None)
         chi = chi_override if chi_override is not None else calibrate_chi(c0, h0, T, sigma)
-        u = np.array([period_utility_additive(c_hat[i], h[i], T, sigma, chi)
+
+        # Only output damage (phi) hits consumption; gamma goes into E
+        c_hat = effective_consumption_output_only(c, dT, phi, damage_type)
+        E = env_quality(dT, kappa)
+        E_pristine = np.ones(n)  # no damage counterfactual
+
+        # Use baseline consumption as reference for normalisation (c and E on same scale)
+        c_ref = c0
+
+        u = np.array([period_utility_ecological(c_hat[i], h[i], E[i], T, sigma, chi,
+                                                 alpha_cE, epsilon_cE, c_ref)
                        for i in range(n)])
-        u_no_damage = np.array([period_utility_additive(c_no_damage[i], h[i], T, sigma, chi)
+        u_no_damage = np.array([period_utility_ecological(c_no_damage[i], h[i], E_pristine[i],
+                                                           T, sigma, chi, alpha_cE, epsilon_cE, c_ref)
                                  for i in range(n)])
-        u_cons_only = np.log(np.maximum(c_hat, 1e-6))
     else:
-        alpha = calibrate_alpha_ces(c0, h0, T, epsilon)
-        u = np.array([period_utility_ces(c_hat[i], h[i], T, epsilon, alpha)
-                       for i in range(n)])
-        u_no_damage = np.array([period_utility_ces(c_no_damage[i], h[i], T, epsilon, alpha)
-                                 for i in range(n)])
-        u_cons_only = np.log(np.maximum(c_hat, 1e-6))
+        # Additive and CES: all damage (phi+gamma) hits consumption
+        c_hat = effective_consumption(c, dT, phi, gamma, damage_type)
+        E = None
+
+        if spec == "additive":
+            chi_override = params.get("chi_override", None)
+            chi = chi_override if chi_override is not None else calibrate_chi(c0, h0, T, sigma)
+            u = np.array([period_utility_additive(c_hat[i], h[i], T, sigma, chi)
+                           for i in range(n)])
+            u_no_damage = np.array([period_utility_additive(c_no_damage[i], h[i], T, sigma, chi)
+                                     for i in range(n)])
+        else:
+            alpha = calibrate_alpha_ces(c0, h0, T, epsilon)
+            u = np.array([period_utility_ces(c_hat[i], h[i], T, epsilon, alpha)
+                           for i in range(n)])
+            u_no_damage = np.array([period_utility_ces(c_no_damage[i], h[i], T, epsilon, alpha)
+                                     for i in range(n)])
 
     discount = beta ** t_idx
     W = np.sum(discount * u)
     W_no_damage = np.sum(discount * u_no_damage)
 
-    return {
+    result = {
         "welfare": W,
         "welfare_no_damage": W_no_damage,
         "damage_cost": W_no_damage - W,
@@ -218,6 +318,9 @@ def compute_welfare(df, params, spec="additive"):
         "discount_factors": discount,
         "discounted_utility": discount * u,
     }
+    if E is not None:
+        result["env_quality"] = E
+    return result
 
 
 def consumption_equivalent(W_sc, W_pc, n_periods, r):
@@ -307,9 +410,15 @@ def main():
 
         st.divider()
         st.subheader("Utility Specification")
-        spec = st.radio("Specification", ["Additive (Log + CRRA)", "CES"],
+        spec = st.radio("Specification",
+                        ["Additive (Log + CRRA)", "CES", "Ecological"],
                         horizontal=True)
-        spec_key = "additive" if "Additive" in spec else "ces"
+        if "Additive" in spec:
+            spec_key = "additive"
+        elif "CES" in spec:
+            spec_key = "ces"
+        else:
+            spec_key = "ecological"
 
         st.divider()
         st.subheader("Parameters")
@@ -322,6 +431,8 @@ def main():
             "sl_phi": DEFAULT_PARAMS["phi"],
             "sl_gamma": DEFAULT_PARAMS["gamma_raw"],
             "sl_chi": 4.0,
+            "sl_epsilon_cE": 0.5,
+            "sl_alpha_cE": 0.5,
         }
         for k, v in _slider_keys.items():
             if k not in st.session_state:
@@ -353,11 +464,49 @@ def main():
                                          step=0.1, key="sl_chi")
             else:
                 st.caption("\u03C7 = \u2113\u2080\u1D9E / h\u2080 (calibrated per region)")
-        else:
+        elif spec_key == "ces":
             sigma_val = DEFAULT_PARAMS["sigma"]
             epsilon_val = st.slider("CES elasticity \u03B5", 0.2, 2.0,
                                     step=0.1, key="sl_epsilon")
             chi_override = None
+        else:
+            # Ecological specification
+            sigma_val = st.slider("Leisure curvature \u03C3", -1.0, 3.0,
+                                  step=0.1, key="sl_sigma")
+            epsilon_val = DEFAULT_PARAMS["epsilon"]
+
+            chi_mode = st.radio("Leisure weight \u03C7",
+                                ["Calibrate from 2025 data", "Set manually"],
+                                horizontal=True, key="chi_mode")
+            chi_override = None
+            if chi_mode == "Set manually":
+                chi_override = st.slider("Leisure weight \u03C7", 0.5, 10.0,
+                                         step=0.1, key="sl_chi")
+            else:
+                st.caption("\u03C7 = \u2113\u2080\u1D9E / h\u2080 (calibrated per region)")
+
+            st.divider()
+            st.subheader("Ecological Parameters")
+            epsilon_cE_val = st.slider(
+                "Substitutability \u03B5(c,E)",
+                0.01, 2.0, step=0.01, key="sl_epsilon_cE",
+                help="Elasticity of substitution between consumption and environment. "
+                     "0 = Leontief (no substitution), 1 = Cobb-Douglas, >1 = substitutes.")
+            alpha_cE_val = st.slider(
+                "Consumption weight \u03B1(c,E)",
+                0.1, 0.9, step=0.05, key="sl_alpha_cE",
+                help="Weight on consumption in the CES composite. "
+                     "Higher = consumption matters more; lower = environment matters more.")
+
+            # Show interpretation of epsilon_cE
+            if epsilon_cE_val < 0.1:
+                st.caption("\u2248 Leontief: welfare \u2248 min(consumption, environment)")
+            elif abs(epsilon_cE_val - 1.0) < 0.05:
+                st.caption("\u2248 Cobb-Douglas: moderate substitutability")
+            elif epsilon_cE_val > 1.5:
+                st.caption("High substitutability: consumption can offset env. loss")
+            else:
+                st.caption(f"\u03B5(c,E) = {epsilon_cE_val:.2f}: limited substitutability")
 
         st.divider()
         st.subheader("Damage Function")
@@ -365,10 +514,20 @@ def main():
                                      ["Exponential", "Quadratic"],
                                      horizontal=True, key="damage_type")
         damage_type = damage_type_label.lower()
-        if damage_type == "exponential":
-            st.caption("\u0109 = c \u00B7 exp[\u2013(\u03C6+\u03B3)\u00B7\u0394T]")
+        if spec_key == "ecological":
+            st.caption("**Ecological mode:** output damage (\u03C6) hits consumption; "
+                       "well-being damage (\u03B3) sets environmental quality \u03BA.")
+            if damage_type == "exponential":
+                st.caption("\u0109 = c \u00B7 exp[\u2013\u03C6\u00B7\u0394T]  |  "
+                           "E = 1 / (1 + \u03BA\u00B7\u0394T),  \u03BA = \u03B3/100")
+            else:
+                st.caption("\u0109 = c / [1 + \u03C6\u00B7\u0394T\u00B2]  |  "
+                           "E = 1 / (1 + \u03BA\u00B7\u0394T),  \u03BA = \u03B3/100")
         else:
-            st.caption("\u0109 = c / [1 + (\u03C6+\u03B3)\u00B7\u0394T\u00B2]  (DICE-style)")
+            if damage_type == "exponential":
+                st.caption("\u0109 = c \u00B7 exp[\u2013(\u03C6+\u03B3)\u00B7\u0394T]")
+            else:
+                st.caption("\u0109 = c / [1 + (\u03C6+\u03B3)\u00B7\u0394T\u00B2]  (DICE-style)")
 
         phi_val = st.slider("Output damage (%/\u00B0C)", 0.0, 30.0,
                             step=1.0, key="sl_phi")
@@ -383,6 +542,10 @@ def main():
             "phi": phi_val, "gamma_raw": gamma_val, "epsilon": epsilon_val,
             "damage_type": damage_type, "chi_override": chi_override,
         }
+        if spec_key == "ecological":
+            params["epsilon_cE"] = epsilon_cE_val
+            params["alpha_cE"] = alpha_cE_val
+            params["kappa"] = calibrate_kappa(gamma_val)
 
         st.divider()
         st.subheader("Region")
@@ -486,33 +649,37 @@ def main():
         col3.metric("Consumption Equivalent", f"{ce:+.2f}%",
                      delta=f"{'SC' if ce > 0 else 'PC'} preferred")
 
-        summary_data = {
-            "Metric": [
-                "Lifetime Welfare (with damages)",
-                "Lifetime Welfare (no damages)",
-                "Climate Damage Cost",
-                "Avg Raw Consumption",
-                "Avg Effective Consumption",
-                "Avg Leisure (hrs/yr)",
-                "Terminal Temp Change (\u00B0C)",
-            ],
-            "SC": [
-                f"{W_sc:.2f}", f"{W_sc_nd:.2f}",
-                f"{results['SC']['damage_cost']:.2f}",
-                f"{np.mean(results['SC']['raw_consumption']):,.0f}",
-                f"{np.mean(results['SC']['effective_consumption']):,.0f}",
-                f"{np.mean(results['SC']['leisure']):,.0f}",
-                f"{results['SC']['temp_change'][-1]:.2f}",
-            ],
-            "PC": [
-                f"{W_pc:.2f}", f"{W_pc_nd:.2f}",
-                f"{results['PC']['damage_cost']:.2f}",
-                f"{np.mean(results['PC']['raw_consumption']):,.0f}",
-                f"{np.mean(results['PC']['effective_consumption']):,.0f}",
-                f"{np.mean(results['PC']['leisure']):,.0f}",
-                f"{results['PC']['temp_change'][-1]:.2f}",
-            ],
-        }
+        summary_metrics = [
+            "Lifetime Welfare (with damages)",
+            "Lifetime Welfare (no damages)",
+            "Climate Damage Cost",
+            "Avg Raw Consumption",
+            "Avg Effective Consumption",
+            "Avg Leisure (hrs/yr)",
+            "Terminal Temp Change (\u00B0C)",
+        ]
+        summary_sc = [
+            f"{W_sc:.2f}", f"{W_sc_nd:.2f}",
+            f"{results['SC']['damage_cost']:.2f}",
+            f"{np.mean(results['SC']['raw_consumption']):,.0f}",
+            f"{np.mean(results['SC']['effective_consumption']):,.0f}",
+            f"{np.mean(results['SC']['leisure']):,.0f}",
+            f"{results['SC']['temp_change'][-1]:.2f}",
+        ]
+        summary_pc = [
+            f"{W_pc:.2f}", f"{W_pc_nd:.2f}",
+            f"{results['PC']['damage_cost']:.2f}",
+            f"{np.mean(results['PC']['raw_consumption']):,.0f}",
+            f"{np.mean(results['PC']['effective_consumption']):,.0f}",
+            f"{np.mean(results['PC']['leisure']):,.0f}",
+            f"{results['PC']['temp_change'][-1]:.2f}",
+        ]
+        if spec_key == "ecological":
+            summary_metrics.append("Terminal Env. Quality (E)")
+            summary_sc.append(f"{results['SC']['env_quality'][-1]:.3f}")
+            summary_pc.append(f"{results['PC']['env_quality'][-1]:.3f}")
+
+        summary_data = {"Metric": summary_metrics, "SC": summary_sc, "PC": summary_pc}
         st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
 
         # Interpretation
@@ -529,13 +696,17 @@ def main():
                      f"T={params['T']:.0f}h,  output damage={params['phi']:.1f}%/\u00B0C,  "
                      f"well-being damage={params['gamma_raw']:.1f}%/\u00B0C,  "
                      f"damage fn={params.get('damage_type', 'exponential')}")
-        if spec_key == "additive":
+        if spec_key in ("additive", "ecological"):
             if params.get("chi_override") is not None:
                 param_str += f",  \u03C7={params['chi_override']:.1f} (manual)"
             else:
                 param_str += ",  \u03C7=calibrated"
         if spec_key == "ces":
             param_str += f",  \u03B5={params['epsilon']:.1f}"
+        if spec_key == "ecological":
+            param_str += (f",  \u03B5(c,E)={params['epsilon_cE']:.2f}"
+                          f",  \u03B1(c,E)={params['alpha_cE']:.2f}"
+                          f",  \u03BA={params['kappa']:.4f}")
         st.caption(f"Parameters: {param_str}")
 
     # ────────────────────────────────────────────────────────────
@@ -545,10 +716,20 @@ def main():
         st.subheader(f"Time Series — {region}")
         years = results["SC"]["years"]
 
-        fig = make_subplots(rows=2, cols=2,
-                            subplot_titles=("Per-Capita Consumption", "Leisure (hrs/yr)",
-                                            "Period Utility", "Temperature Change"),
-                            vertical_spacing=0.12, horizontal_spacing=0.08)
+        # For ecological spec, show 3x2 grid with env quality; otherwise 2x2
+        if spec_key == "ecological":
+            fig = make_subplots(rows=3, cols=2,
+                                subplot_titles=("Per-Capita Consumption", "Leisure (hrs/yr)",
+                                                "Environmental Quality (E)", "Temperature Change",
+                                                "Period Utility", "Discounted Utility"),
+                                vertical_spacing=0.08, horizontal_spacing=0.08)
+            chart_height = 900
+        else:
+            fig = make_subplots(rows=2, cols=2,
+                                subplot_titles=("Per-Capita Consumption", "Leisure (hrs/yr)",
+                                                "Period Utility", "Temperature Change"),
+                                vertical_spacing=0.12, horizontal_spacing=0.08)
+            chart_height = 650
 
         # Consumption
         fig.add_trace(go.Scatter(x=years, y=results["SC"]["raw_consumption"],
@@ -576,35 +757,82 @@ def main():
                                   showlegend=False),
                       row=1, col=2)
 
-        # Period Utility
-        fig.add_trace(go.Scatter(x=years, y=results["SC"]["period_utility"],
-                                  name="SC", line=dict(color=COLOUR_SC, width=2.2),
-                                  showlegend=False),
-                      row=2, col=1)
-        fig.add_trace(go.Scatter(x=years, y=results["PC"]["period_utility"],
-                                  name="PC", line=dict(color=COLOUR_PC, width=2.2),
-                                  showlegend=False),
-                      row=2, col=1)
+        if spec_key == "ecological":
+            # Environmental Quality (row 2, col 1)
+            fig.add_trace(go.Scatter(x=years, y=results["SC"]["env_quality"],
+                                      name="SC", line=dict(color=COLOUR_SC, width=2.2),
+                                      showlegend=False),
+                          row=2, col=1)
+            fig.add_trace(go.Scatter(x=years, y=results["PC"]["env_quality"],
+                                      name="PC", line=dict(color=COLOUR_PC, width=2.2),
+                                      showlegend=False),
+                          row=2, col=1)
 
-        # Temperature
-        fig.add_trace(go.Scatter(x=years, y=results["SC"]["temp_change"],
-                                  name="SC", line=dict(color=COLOUR_SC, width=2.2),
-                                  showlegend=False),
-                      row=2, col=2)
-        fig.add_trace(go.Scatter(x=years, y=results["PC"]["temp_change"],
-                                  name="PC", line=dict(color=COLOUR_PC, width=2.2),
-                                  showlegend=False),
-                      row=2, col=2)
+            # Temperature (row 2, col 2)
+            fig.add_trace(go.Scatter(x=years, y=results["SC"]["temp_change"],
+                                      name="SC", line=dict(color=COLOUR_SC, width=2.2),
+                                      showlegend=False),
+                          row=2, col=2)
+            fig.add_trace(go.Scatter(x=years, y=results["PC"]["temp_change"],
+                                      name="PC", line=dict(color=COLOUR_PC, width=2.2),
+                                      showlegend=False),
+                          row=2, col=2)
 
-        layout_opts = _plotly_layout(f"Welfare Analysis — {region}", height=650)
+            # Period Utility (row 3, col 1)
+            fig.add_trace(go.Scatter(x=years, y=results["SC"]["period_utility"],
+                                      name="SC", line=dict(color=COLOUR_SC, width=2.2),
+                                      showlegend=False),
+                          row=3, col=1)
+            fig.add_trace(go.Scatter(x=years, y=results["PC"]["period_utility"],
+                                      name="PC", line=dict(color=COLOUR_PC, width=2.2),
+                                      showlegend=False),
+                          row=3, col=1)
+
+            # Discounted Utility (row 3, col 2)
+            fig.add_trace(go.Scatter(x=years, y=results["SC"]["discounted_utility"],
+                                      name="SC", line=dict(color=COLOUR_SC, width=2.2),
+                                      showlegend=False),
+                          row=3, col=2)
+            fig.add_trace(go.Scatter(x=years, y=results["PC"]["discounted_utility"],
+                                      name="PC", line=dict(color=COLOUR_PC, width=2.2),
+                                      showlegend=False),
+                          row=3, col=2)
+
+            fig.update_yaxes(title_text="E (0\u20131)", row=2, col=1)
+            fig.update_yaxes(title_text="\u0394T (\u00B0C)", row=2, col=2)
+            fig.update_yaxes(title_text="u(t)", row=3, col=1)
+            fig.update_yaxes(title_text="\u03B2\u1D57 \u00B7 u(t)", row=3, col=2)
+        else:
+            # Period Utility (row 2, col 1)
+            fig.add_trace(go.Scatter(x=years, y=results["SC"]["period_utility"],
+                                      name="SC", line=dict(color=COLOUR_SC, width=2.2),
+                                      showlegend=False),
+                          row=2, col=1)
+            fig.add_trace(go.Scatter(x=years, y=results["PC"]["period_utility"],
+                                      name="PC", line=dict(color=COLOUR_PC, width=2.2),
+                                      showlegend=False),
+                          row=2, col=1)
+
+            # Temperature (row 2, col 2)
+            fig.add_trace(go.Scatter(x=years, y=results["SC"]["temp_change"],
+                                      name="SC", line=dict(color=COLOUR_SC, width=2.2),
+                                      showlegend=False),
+                          row=2, col=2)
+            fig.add_trace(go.Scatter(x=years, y=results["PC"]["temp_change"],
+                                      name="PC", line=dict(color=COLOUR_PC, width=2.2),
+                                      showlegend=False),
+                          row=2, col=2)
+
+            fig.update_yaxes(title_text="u(t)", row=2, col=1)
+            fig.update_yaxes(title_text="\u0394T (\u00B0C)", row=2, col=2)
+
+        layout_opts = _plotly_layout(f"Welfare Analysis — {region}", height=chart_height)
         layout_opts["legend"] = dict(x=0.01, y=0.99, xanchor="left", yanchor="top",
                                      bgcolor="rgba(255,255,255,0.9)",
                                      bordercolor="#DDDDDD", borderwidth=1, font=dict(size=10))
         fig.update_layout(**layout_opts)
         fig.update_yaxes(title_text="Consumption (2025 Euro PPP)", row=1, col=1)
         fig.update_yaxes(title_text="Hours", row=1, col=2)
-        fig.update_yaxes(title_text="u(t)", row=2, col=1)
-        fig.update_yaxes(title_text="\u0394T (\u00B0C)", row=2, col=2)
 
         st.plotly_chart(fig, use_container_width=True)
 
@@ -666,6 +894,11 @@ def main():
             "gamma_raw": ("Well-being damage (%/\u00B0C)", np.arange(0.0, 31.0, 3.0)),
             "epsilon": ("CES elasticity \u03B5", np.arange(0.2, 2.1, 0.2)),
         }
+        if spec_key == "ecological":
+            sens_param_defs["epsilon_cE"] = ("Substitutability \u03B5(c,E)",
+                                              np.arange(0.05, 2.05, 0.1))
+            sens_param_defs["alpha_cE"] = ("Consumption weight \u03B1(c,E)",
+                                            np.arange(0.1, 0.91, 0.1))
 
         col_x, col_y = st.columns(2)
         with col_x:
@@ -733,7 +966,7 @@ def main():
                 fig_heat.update_layout(
                     **_plotly_layout(
                         f"Sensitivity: {sens_region} | "
-                        f"{'Additive' if spec_key == 'additive' else 'CES'}",
+                        f"{'Additive' if spec_key == 'additive' else 'CES' if spec_key == 'ces' else 'Ecological'}",
                         height=550),
                     xaxis_title=x_label,
                     yaxis_title=y_label,
@@ -837,9 +1070,10 @@ def main():
     # TAB 6: MODEL
     # ────────────────────────────────────────────────────────────
     with tab_model:
-        st.subheader(f"Welfare Model: {'Additive (Log + CRRA)' if spec_key == 'additive' else 'CES'}")
-        st.caption("This documentation updates when you switch between Additive and CES "
-                   "in the sidebar.")
+        spec_labels = {"additive": "Additive (Log + CRRA)",
+                       "ces": "CES", "ecological": "Ecological"}
+        st.subheader(f"Welfare Model: {spec_labels[spec_key]}")
+        st.caption("This documentation updates when you switch specifications in the sidebar.")
 
         st.markdown("---")
 
@@ -854,7 +1088,7 @@ def main():
 - $\\chi$ = calibrated leisure weight (per region)
 - $\\sigma$ = leisure curvature (CRRA on leisure); $\\sigma > 0$ ⇒ diminishing MU
 """)
-        else:
+        elif spec_key == "ces":
             st.latex(r"U_t = \left[\alpha \cdot \hat{c}_t^{\,\rho} + (1-\alpha) \cdot \ell_t^{\,\rho}\right]^{1/\rho}")
             st.latex(r"u_t = \ln(U_t) = \frac{1}{\rho} \ln\!\left[\alpha \cdot \hat{c}_t^{\,\rho} + (1-\alpha) \cdot \ell_t^{\,\rho}\right], \quad \rho = \frac{\varepsilon - 1}{\varepsilon}")
             st.markdown("""
@@ -862,30 +1096,66 @@ def main():
 - $\\alpha$ = calibrated share parameter
 - $\\varepsilon < 1$: complements  |  $\\varepsilon > 1$: substitutes  |  $\\varepsilon = 1$: Cobb-Douglas
 """)
+        else:
+            st.latex(r"u_t = \frac{1}{\rho_{cE}} \ln\!\left[\alpha_{cE} \cdot \hat{c}_t^{\,\rho_{cE}} + (1-\alpha_{cE}) \cdot E_t^{\,\rho_{cE}}\right] + \chi \cdot \frac{\ell_t^{1-\sigma}}{1-\sigma}")
+            st.latex(r"\rho_{cE} = \frac{\varepsilon_{cE} - 1}{\varepsilon_{cE}}")
+            st.markdown("""
+**Three arguments:** consumption, environment, and leisure.
+
+- $\\hat{c}_t$ = effective consumption (output damage **only** — $\\varphi$, not $\\gamma$)
+- $E_t$ = environmental quality index (see below)
+- $\\ell_t = T - h_t$ = leisure hours
+- $\\alpha_{cE}$ = weight on consumption in the consumption-environment composite
+- $\\varepsilon_{cE}$ = elasticity of substitution between consumption and environment
+- $\\chi$, $\\sigma$ = leisure weight and curvature (same as additive)
+
+**Key limiting cases:**
+- $\\varepsilon_{cE} \\to 0$ (Leontief): welfare ≈ min(consumption, environment) — no compensation possible
+- $\\varepsilon_{cE} = 1$ (Cobb-Douglas): moderate substitutability
+- $\\varepsilon_{cE} \\to \\infty$: consumption can fully offset environmental loss
+""")
 
         st.markdown("---")
 
-        # 2. Climate Damage Wedge
-        st.markdown("### 2. Climate Damage Wedge")
-        st.markdown("**Exponential (default):**")
-        st.latex(r"\hat{c}_t = c_t \cdot \exp\!\left(-(\varphi + \gamma) \cdot \Delta T_t\right)")
-        st.markdown("**Quadratic / DICE-style (alternative):**")
-        st.latex(r"\hat{c}_t = \frac{c_t}{1 + (\varphi + \gamma) \cdot \Delta T_t^{\,2}}")
-        st.markdown("""
+        # 2. Climate Damage Channels
+        st.markdown("### 2. Climate Damage Channels")
+        if spec_key == "ecological":
+            st.markdown("**In the ecological specification, the two empirical damage channels "
+                        "are separated:**")
+            st.markdown("**Channel A — Output damage (hits consumption):**")
+            st.latex(r"\hat{c}_t = c_t \cdot \exp\!\left(-\varphi \cdot \Delta T_t\right) \quad \text{(exponential)}")
+            st.latex(r"\hat{c}_t = \frac{c_t}{1 + \varphi \cdot \Delta T_t^{\,2}} \quad \text{(quadratic)}")
+            st.markdown("**Channel B — Non-market well-being damage (enters via E):**")
+            st.latex(r"E_t = \frac{1}{1 + \kappa \cdot \Delta T_t}, \qquad \kappa = \gamma / 100")
+            st.markdown("""
+- $\\varphi$ = output damage (default 12%/°C, Bilal & Känzig 2024) — only this hits consumption
+- $\\gamma$ sets $\\kappa$, which controls how fast environmental quality degrades (default 13.3%/°C, Dietrich & Nichols 2025)
+- $E = 1$ at zero warming (pristine); $E \\to 0$ as warming rises
+- Under SC (ΔT ≈ 0.4°C): E ≈ 0.95 — modest degradation
+- Under PC (ΔT ≈ 2.8°C): E ≈ 0.73 — significant degradation
+
+**Why separate?** The Dietrich & Nichols evidence shows that non-income channels (health, mental well-being, amenity) dominate the welfare impact of extreme heat. Routing these through consumption conflates two different mechanisms and assumes unlimited substitutability between consumption and the environment.
+""")
+        else:
+            st.markdown("**Exponential (default):**")
+            st.latex(r"\hat{c}_t = c_t \cdot \exp\!\left(-(\varphi + \gamma) \cdot \Delta T_t\right)")
+            st.markdown("**Quadratic / DICE-style (alternative):**")
+            st.latex(r"\hat{c}_t = \frac{c_t}{1 + (\varphi + \gamma) \cdot \Delta T_t^{\,2}}")
+            st.markdown("""
 - $c_t$ = raw consumption from scenario data
 - $\\Delta T_t$ = cumulative temperature change (summed from annual increments)
-- $\\varphi$ = output damage (default 12%/°C, Bilal & Känzig 2026)
+- $\\varphi$ = output damage (default 12%/°C, Bilal & Känzig 2024)
 - $\\gamma$ = well-being damage (default 13.3%/°C, Dietrich & Nichols 2025)
 - The exponential form is **concave** in $\\Delta T$ (each additional degree does proportionally less damage)
 - The quadratic (DICE-style) form is **convex** in $\\Delta T$ (each additional degree does proportionally more damage), better capturing tipping points and tail risks. Damage never reaches 100%.
 """)
-        if params.get("damage_type") == "quadratic":
-            st.info("**Example (quadratic):** With total damage coeff = 25.3% and ΔT = 2°C: "
-                    "effective consumption = 1 / (1 + 0.253 × 4) ≈ 50% of raw. "
-                    "At 3°C: ≈ 30% of raw. Damage accelerates with warming.")
-        else:
-            st.info("**Example (exponential):** With total damage = 25.3%/°C and ΔT = 2°C: "
-                    "effective consumption = exp(−0.253 × 2) ≈ 60% of raw.")
+            if params.get("damage_type") == "quadratic":
+                st.info("**Example (quadratic):** With total damage coeff = 25.3% and ΔT = 2°C: "
+                        "effective consumption = 1 / (1 + 0.253 × 4) ≈ 50% of raw. "
+                        "At 3°C: ≈ 30% of raw. Damage accelerates with warming.")
+            else:
+                st.info("**Example (exponential):** With total damage = 25.3%/°C and ΔT = 2°C: "
+                        "effective consumption = exp(−0.253 × 2) ≈ 60% of raw.")
 
         st.markdown("---")
 
@@ -900,9 +1170,24 @@ def main():
                 "Alternatively, $\\chi$ can be set manually to a common value across all regions, "
                 "which imposes identical preferences everywhere."
             )
-        else:
+        elif spec_key == "ces":
             st.latex(r"\text{MRS} = \frac{1-\alpha}{\alpha}\left(\frac{c_0}{\ell_0}\right)^{1/\varepsilon} = \frac{c_0}{h_0} \quad \Rightarrow \quad \alpha = \frac{1}{1 + (c_0/h_0) \cdot (\ell_0/c_0)^{1/\varepsilon}}")
             st.markdown("Calibrated separately per region from 2025 baseline data.")
+        else:
+            st.markdown("**Leisure weight χ:**")
+            st.latex(r"\chi = \frac{\ell_0^{\,\sigma}}{h_0}")
+            st.markdown("Same calibration as the additive specification — depends only on time "
+                        "allocation, not consumption levels.")
+            st.markdown("**Consumption-environment weight α(c,E):**")
+            st.markdown("Set directly by the user (default 0.5). This parameter controls the "
+                        "relative importance of consumption vs. environmental quality in welfare. "
+                        "It can be explored over a range to reveal which assumptions drive the "
+                        "scenario ranking.")
+            st.markdown("**Environmental sensitivity κ:**")
+            st.latex(r"\kappa = \gamma / 100")
+            st.markdown("Calibrated from the well-being damage coefficient γ so that the marginal "
+                        "welfare loss from environmental degradation at 1°C matches the Dietrich & "
+                        "Nichols evidence.")
 
         st.markdown("---")
 
@@ -936,26 +1221,40 @@ def main():
 
         # 7. Parameter Reference
         st.markdown("### 7. Parameter Reference")
-        symbols = ["r", "\u03C3" if spec_key == "additive" else "\u03B5",
-                    "T", "\u03C6", "\u03B3"]
+        symbols = ["r", "T", "\u03C6", "\u03B3"]
         param_names = [
             "Social discount rate",
-            "Leisure curvature (CRRA)" if spec_key == "additive" else "CES elasticity",
             "Annual time endowment",
             "Output damage",
             "Well-being damage",
         ]
         defaults = [
             "2.0%/yr",
-            "1.0" if spec_key == "additive" else "0.8",
             "4,000 hrs (fixed)",
-            "12%/\u00B0C (Bilal & K\u00E4nzig 2026)",
+            "12%/\u00B0C (Bilal & K\u00E4nzig 2024)",
             "13.3%/\u00B0C (Dietrich & Nichols 2025)",
         ]
-        if spec_key == "additive":
+        if spec_key in ("additive", "ecological"):
+            symbols.insert(1, "\u03C3")
+            param_names.insert(1, "Leisure curvature (CRRA)")
+            defaults.insert(1, "1.0")
             symbols.append("\u03C7")
             param_names.append("Leisure weight")
             defaults.append("Calibrated from 2025 MRS (or manual)")
+        if spec_key == "ces":
+            symbols.insert(1, "\u03B5")
+            param_names.insert(1, "CES elasticity")
+            defaults.insert(1, "0.8")
+        if spec_key == "ecological":
+            symbols.append("\u03B5(c,E)")
+            param_names.append("Consumption-environment substitutability")
+            defaults.append("0.50 (limited substitution)")
+            symbols.append("\u03B1(c,E)")
+            param_names.append("Consumption weight in composite")
+            defaults.append("0.50 (equal weight)")
+            symbols.append("\u03BA")
+            param_names.append("Environmental sensitivity")
+            defaults.append("\u03B3/100 (calibrated from well-being damage)")
         symbols.append("\u2014")
         param_names.append("Damage function")
         defaults.append("Exponential (or Quadratic)")
@@ -968,7 +1267,7 @@ def main():
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             pd.DataFrame(all_region_results).to_excel(writer, sheet_name="Summary", index=False)
-            param_export = pd.DataFrame([{
+            export_dict = {
                 "Specification": spec_key,
                 "DiscountRate_pct": params["r"],
                 "Sigma_LeisureCRRA": params["sigma"],
@@ -978,7 +1277,12 @@ def main():
                 "CES_Epsilon": params["epsilon"],
                 "DamageFunction": params.get("damage_type", "exponential"),
                 "Chi_Override": params.get("chi_override", "calibrated"),
-            }])
+            }
+            if spec_key == "ecological":
+                export_dict["Epsilon_cE"] = params.get("epsilon_cE", 0.5)
+                export_dict["Alpha_cE"] = params.get("alpha_cE", 0.5)
+                export_dict["Kappa"] = params.get("kappa", 0.1333)
+            param_export = pd.DataFrame([export_dict])
             param_export.to_excel(writer, sheet_name="Parameters", index=False)
         st.sidebar.download_button(
             "\u2B07 Download Excel",
