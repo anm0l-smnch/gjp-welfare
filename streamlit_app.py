@@ -412,7 +412,12 @@ def main():
         st.subheader("Utility Specification")
         spec = st.radio("Specification",
                         ["Additive (Log + CRRA)", "CES", "Ecological"],
-                        horizontal=True)
+                        horizontal=True,
+                        help="Additive: log(consumption) + CRRA leisure, separable. "
+                             "CES: constant-elasticity-of-substitution composite of "
+                             "consumption and leisure. "
+                             "Ecological: CES composite of consumption and environmental "
+                             "quality, plus separate CRRA leisure term.")
         if "Additive" in spec:
             spec_key = "additive"
         elif "CES" in spec:
@@ -448,40 +453,67 @@ def main():
             st.session_state["chi_mode"] = "Calibrate from 2025 data"
             st.session_state["damage_type"] = "Exponential"
 
-        r_val = st.slider("Discount rate r (%)", 0.5, 6.0, step=0.1, key="sl_r")
+        r_val = st.slider("Discount rate r (%)", 0.5, 6.0, step=0.1, key="sl_r",
+                          help="Pure rate of time preference. Higher values discount "
+                               "future welfare more heavily. Stern (2006) uses 0.1%; "
+                               "Nordhaus (2017) uses ~1.5%. Our default follows Nordhaus.")
 
         if spec_key == "additive":
             sigma_val = st.slider("Leisure curvature \u03C3", -1.0, 3.0,
-                                  step=0.1, key="sl_sigma")
+                                  step=0.1, key="sl_sigma",
+                                  help="CRRA curvature on leisure. "
+                                       "\u03C3 = 1 gives log utility; \u03C3 > 1 means sharper "
+                                       "diminishing returns to leisure; \u03C3 < 1 means flatter.")
             epsilon_val = DEFAULT_PARAMS["epsilon"]
 
             chi_mode = st.radio("Leisure weight \u03C7",
                                 ["Calibrate from 2025 data", "Set manually"],
-                                horizontal=True, key="chi_mode")
+                                horizontal=True, key="chi_mode",
+                                help="How much utility comes from leisure relative to consumption. "
+                                     "'Calibrate' pins \u03C7 so that the marginal value of "
+                                     "leisure equals the marginal value of consumption at "
+                                     "baseline hours and income.")
             chi_override = None
             if chi_mode == "Set manually":
                 chi_override = st.slider("Leisure weight \u03C7", 0.5, 10.0,
-                                         step=0.1, key="sl_chi")
+                                         step=0.1, key="sl_chi",
+                                         help="Manual leisure weight. Higher values mean "
+                                              "leisure contributes more to welfare relative "
+                                              "to consumption.")
             else:
                 st.caption("\u03C7 = \u2113\u2080\u1D9E / h\u2080 (calibrated per region)")
         elif spec_key == "ces":
             sigma_val = DEFAULT_PARAMS["sigma"]
             epsilon_val = st.slider("CES elasticity \u03B5", 0.2, 2.0,
-                                    step=0.1, key="sl_epsilon")
+                                    step=0.1, key="sl_epsilon",
+                                    help="Elasticity of substitution between consumption and "
+                                         "leisure. \u03B5 < 1: complements (hard to trade off); "
+                                         "\u03B5 = 1: Cobb-Douglas; \u03B5 > 1: substitutes "
+                                         "(easy to trade off).")
             chi_override = None
         else:
             # Ecological specification
             sigma_val = st.slider("Leisure curvature \u03C3", -1.0, 3.0,
-                                  step=0.1, key="sl_sigma")
+                                  step=0.1, key="sl_sigma",
+                                  help="CRRA curvature on leisure. "
+                                       "\u03C3 = 1 gives log utility; \u03C3 > 1 means sharper "
+                                       "diminishing returns to leisure; \u03C3 < 1 means flatter.")
             epsilon_val = DEFAULT_PARAMS["epsilon"]
 
             chi_mode = st.radio("Leisure weight \u03C7",
                                 ["Calibrate from 2025 data", "Set manually"],
-                                horizontal=True, key="chi_mode")
+                                horizontal=True, key="chi_mode",
+                                help="How much utility comes from leisure relative to consumption. "
+                                     "'Calibrate' pins \u03C7 so that the marginal value of "
+                                     "leisure equals the marginal value of consumption at "
+                                     "baseline hours and income.")
             chi_override = None
             if chi_mode == "Set manually":
                 chi_override = st.slider("Leisure weight \u03C7", 0.5, 10.0,
-                                         step=0.1, key="sl_chi")
+                                         step=0.1, key="sl_chi",
+                                         help="Manual leisure weight. Higher values mean "
+                                              "leisure contributes more to welfare relative "
+                                              "to consumption.")
             else:
                 st.caption("\u03C7 = \u2113\u2080\u1D9E / h\u2080 (calibrated per region)")
 
@@ -512,7 +544,11 @@ def main():
         st.subheader("Damage Function")
         damage_type_label = st.radio("Damage specification",
                                      ["Exponential", "Quadratic"],
-                                     horizontal=True, key="damage_type")
+                                     horizontal=True, key="damage_type",
+                                     help="Functional form for how temperature maps to damage. "
+                                          "Exponential: damages grow multiplicatively with \u0394T "
+                                          "(Bilal-K\u00e4nzig 2024). Quadratic: damages grow with "
+                                          "\u0394T\u00B2 (DICE-style, Nordhaus).")
         damage_type = damage_type_label.lower()
         if spec_key == "ecological":
             st.caption("**Ecological mode:** output damage (\u03C6) hits consumption; "
@@ -530,9 +566,17 @@ def main():
                 st.caption("\u0109 = c / [1 + (\u03C6+\u03B3)\u00B7\u0394T\u00B2]  (DICE-style)")
 
         phi_val = st.slider("Output damage (%/\u00B0C)", 0.0, 30.0,
-                            step=1.0, key="sl_phi")
+                            step=1.0, key="sl_phi",
+                            help="GDP/output loss per degree of warming. "
+                                 "Default 12% based on Bilal & K\u00e4nzig (2024). "
+                                 "This reduces effective consumption.")
         gamma_val = st.slider("Well-being damage (%/\u00B0C)", 0.0, 30.0,
-                              step=1.0, key="sl_gamma")
+                              step=1.0, key="sl_gamma",
+                              help="Non-income welfare loss per degree of warming "
+                                   "(health, amenity, ecosystem services). Default 13.3% "
+                                   "based on Dietrich & Nichols (2025). In Additive/CES specs, "
+                                   "this adds to \u03C6 in the damage function. In Ecological spec, "
+                                   "it calibrates \u03BA for environmental quality.")
 
         st.button("Reset Parameters", on_click=_reset_params,
                   use_container_width=True)
@@ -562,9 +606,17 @@ def main():
                                       "raw": "Raw World row",
                                       "utilitarian": "Utilitarian (pop-weighted)",
                                       "atkinson": "Atkinson (inequality-averse)"
-                                  }[x])
+                                  }[x],
+                                  help="How to aggregate regional welfare into a world figure. "
+                                       "'Raw' uses the World row from the data directly. "
+                                       "'Utilitarian' sums population-weighted regional welfare. "
+                                       "'Atkinson' penalises inequality across regions.")
             if agg_method == "atkinson":
-                aversion_val = st.slider("Inequality aversion (e)", 0.0, 3.0, 1.0, 0.1)
+                aversion_val = st.slider("Inequality aversion (e)", 0.0, 3.0, 1.0, 0.1,
+                                         help="Atkinson inequality aversion parameter. "
+                                              "e = 0: no aversion (same as utilitarian). "
+                                              "e = 1: moderate aversion. Higher values "
+                                              "place more weight on worse-off regions.")
 
     # ── Compute welfare for selected region ──
     results = {}
