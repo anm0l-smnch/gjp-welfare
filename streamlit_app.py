@@ -217,6 +217,32 @@ def period_utility_ecological(c_eff, h, E, T, sigma, chi, alpha_cE, epsilon_cE, 
     return u_composite + u_leisure
 
 
+def period_utility_augmented_gdp(c_hat, h, T):
+    """Augmented GDP utility: u = c + (c/h) * ell.
+
+    Linear in consumption and leisure, with leisure valued at the
+    implied wage rate c/h.  Equivalent to u = c * T / h.
+    No diminishing returns — this is the implicit utility of the
+    augmented-GDP approach used in GJP.
+    """
+    ell = T - h
+    ell = max(ell, 1e-6)
+    c_hat = max(c_hat, 1e-6)
+    h = max(h, 1e-6)
+    return c_hat + (c_hat / h) * ell
+
+
+def consumption_equivalent_linear(W_sc, W_pc):
+    """Consumption equivalent for linear (Augmented GDP) utility.
+
+    Since u is linear in c, a uniform % increase in consumption
+    scales welfare proportionally: lambda = W_sc / W_pc - 1.
+    """
+    if abs(W_pc) < 1e-30:
+        return 0.0
+    return (W_sc / W_pc - 1.0) * 100.0
+
+
 def calibrate_kappa(gamma_pct):
     """Calibrate kappa so that the marginal welfare loss from E at 1°C warming
     roughly matches the non-market damage evidence (gamma %/°C).
@@ -259,7 +285,15 @@ def compute_welfare(df, params, spec="additive"):
     c_no_damage = c.copy()
     c0, h0 = c[0], h[0]
 
-    if spec == "ecological":
+    if spec == "augmented_gdp":
+        # Augmented GDP: u = c + (c/h)*ell — linear, no curvature params
+        c_hat = effective_consumption(c, dT, phi, gamma, damage_type)
+        E = None
+        u = np.array([period_utility_augmented_gdp(c_hat[i], h[i], T)
+                       for i in range(n)])
+        u_no_damage = np.array([period_utility_augmented_gdp(c_no_damage[i], h[i], T)
+                                 for i in range(n)])
+    elif spec == "ecological":
         # Ecological: output damage on consumption only; environment enters utility directly
         kappa = params.get("kappa", calibrate_kappa(params["gamma_raw"]))
         alpha_cE = params.get("alpha_cE", 0.5)
@@ -362,8 +396,12 @@ def compute_world_welfare_popweighted(data, params, spec, method="utilitarian",
         scenario_results[scenario] = {"welfare": W_world, "regional": regional, "weights": weights}
 
     n = len(data["SC"][data["SC"]["Region"] == regions[0]]["Year"].unique())
-    ce = consumption_equivalent(scenario_results["SC"]["welfare"],
-                                 scenario_results["PC"]["welfare"], n, params["r"])
+    if spec == "augmented_gdp":
+        ce = consumption_equivalent_linear(scenario_results["SC"]["welfare"],
+                                            scenario_results["PC"]["welfare"])
+    else:
+        ce = consumption_equivalent(scenario_results["SC"]["welfare"],
+                                     scenario_results["PC"]["welfare"], n, params["r"])
     return {"SC": scenario_results["SC"], "PC": scenario_results["PC"],
             "consumption_equivalent": ce, "regions": regions}
 
@@ -411,14 +449,18 @@ def main():
         st.divider()
         st.subheader("Utility Specification")
         spec = st.radio("Specification",
-                        ["Additive (Log + CRRA)", "CES", "Ecological"],
+                        ["Augmented GDP", "Additive (Log + CRRA)", "CES", "Ecological"],
                         horizontal=True,
-                        help="Additive: log(consumption) + CRRA leisure, separable. "
+                        help="Augmented GDP: linear u = c + (c/h)·ℓ — no diminishing returns "
+                             "(GJP baseline). "
+                             "Additive: log(consumption) + CRRA leisure, separable. "
                              "CES: constant-elasticity-of-substitution composite of "
                              "consumption and leisure. "
                              "Ecological: CES composite of consumption and environmental "
                              "quality, plus separate CRRA leisure term.")
-        if "Additive" in spec:
+        if "Augmented" in spec:
+            spec_key = "augmented_gdp"
+        elif "Additive" in spec:
             spec_key = "additive"
         elif "CES" in spec:
             spec_key = "ces"
@@ -458,7 +500,14 @@ def main():
                                "future welfare more heavily. Stern (2006) uses 0.1%; "
                                "Nordhaus (2017) uses ~1.5%. Our default follows Nordhaus.")
 
-        if spec_key == "additive":
+        if spec_key == "augmented_gdp":
+            # No curvature parameters — linear utility
+            sigma_val = DEFAULT_PARAMS["sigma"]
+            epsilon_val = DEFAULT_PARAMS["epsilon"]
+            chi_override = None
+            st.caption("Augmented GDP: u = c + (c/h) \u00B7 \u2113.  "
+                       "No curvature parameters \u2014 only discount rate and damage function apply.")
+        elif spec_key == "additive":
             sigma_val = st.slider("Leisure curvature \u03C3", -1.0, 3.0,
                                   step=0.1, key="sl_sigma",
                                   help="CRRA curvature on leisure. "
@@ -640,8 +689,12 @@ def main():
             df_r = data[scenario][data[scenario]["Region"] == region].sort_values("Year").reset_index(drop=True)
             results[scenario] = compute_welfare(df_r, params, spec=spec_key)
         n = len(results["SC"]["years"])
-        ce = consumption_equivalent(results["SC"]["welfare"], results["PC"]["welfare"],
-                                     n, params["r"])
+        if spec_key == "augmented_gdp":
+            ce = consumption_equivalent_linear(results["SC"]["welfare"],
+                                               results["PC"]["welfare"])
+        else:
+            ce = consumption_equivalent(results["SC"]["welfare"], results["PC"]["welfare"],
+                                         n, params["r"])
     results["consumption_equivalent"] = ce
 
     # ── Compute all regions (for Regional, Sensitivity, Progress tabs) ──
@@ -668,8 +721,12 @@ def main():
             row[f"{scenario}_temp_2025"] = res["temp_change"][0]
             row[f"{scenario}_temp_2100"] = res["temp_change"][-1]
         n_yr = len(data["SC"][data["SC"]["Region"] == reg]["Year"].unique())
-        row["CE_pct"] = consumption_equivalent(
-            row.get("SC_welfare", 0), row.get("PC_welfare", 0), n_yr, params["r"])
+        if spec_key == "augmented_gdp":
+            row["CE_pct"] = consumption_equivalent_linear(
+                row.get("SC_welfare", 0), row.get("PC_welfare", 0))
+        else:
+            row["CE_pct"] = consumption_equivalent(
+                row.get("SC_welfare", 0), row.get("PC_welfare", 0), n_yr, params["r"])
         all_region_results.append(row)
 
     # ══════════════════════════════════════════════════════════════
@@ -683,7 +740,9 @@ def main():
     # ────────────────────────────────────────────────────────────
     with tab_summary:
         st.subheader(f"Welfare Results — {region}")
-        spec_text = f"**{'Additive (Log + CRRA)' if spec_key == 'additive' else 'CES'}**"
+        spec_labels = {"augmented_gdp": "Augmented GDP", "additive": "Additive (Log + CRRA)",
+                       "ces": "CES", "ecological": "Ecological"}
+        spec_text = f"**{spec_labels.get(spec_key, spec_key)}**"
         if region == "World" and agg_method != "raw":
             spec_text += f"  |  Aggregation: {agg_method.title()}"
             if agg_method == "atkinson":
@@ -744,10 +803,12 @@ def main():
         else:
             st.info(f"SC and PC yield approximately equal welfare for {region}.")
 
-        param_str = (f"r={params['r']:.1f}%,  \u03C3={params['sigma']:.1f},  "
+        param_str = (f"r={params['r']:.1f}%,  "
                      f"T={params['T']:.0f}h,  output damage={params['phi']:.1f}%/\u00B0C,  "
                      f"well-being damage={params['gamma_raw']:.1f}%/\u00B0C,  "
                      f"damage fn={params.get('damage_type', 'exponential')}")
+        if spec_key != "augmented_gdp":
+            param_str = f"\u03C3={params['sigma']:.1f},  " + param_str
         if spec_key in ("additive", "ecological"):
             if params.get("chi_override") is not None:
                 param_str += f",  \u03C7={params['chi_override']:.1f} (manual)"
@@ -939,18 +1000,26 @@ def main():
     with tab_sensitivity:
         st.subheader("Sensitivity Heatmap")
 
-        sens_param_defs = {
-            "r": ("Discount rate r (%)", np.arange(0.5, 5.1, 0.5)),
-            "sigma": ("Leisure curvature \u03C3", np.arange(-1.0, 3.1, 0.5)),
-            "phi": ("Output damage (%/\u00B0C)", np.arange(0.0, 31.0, 3.0)),
-            "gamma_raw": ("Well-being damage (%/\u00B0C)", np.arange(0.0, 31.0, 3.0)),
-            "epsilon": ("CES elasticity \u03B5", np.arange(0.2, 2.1, 0.2)),
-        }
-        if spec_key == "ecological":
-            sens_param_defs["epsilon_cE"] = ("Substitutability \u03B5(c,E)",
-                                              np.arange(0.05, 2.05, 0.1))
-            sens_param_defs["alpha_cE"] = ("Consumption weight \u03B1(c,E)",
-                                            np.arange(0.1, 0.91, 0.1))
+        if spec_key == "augmented_gdp":
+            # Only r and damage parameters are relevant for linear utility
+            sens_param_defs = {
+                "r": ("Discount rate r (%)", np.arange(0.5, 5.1, 0.5)),
+                "phi": ("Output damage (%/\u00B0C)", np.arange(0.0, 31.0, 3.0)),
+                "gamma_raw": ("Well-being damage (%/\u00B0C)", np.arange(0.0, 31.0, 3.0)),
+            }
+        else:
+            sens_param_defs = {
+                "r": ("Discount rate r (%)", np.arange(0.5, 5.1, 0.5)),
+                "sigma": ("Leisure curvature \u03C3", np.arange(-1.0, 3.1, 0.5)),
+                "phi": ("Output damage (%/\u00B0C)", np.arange(0.0, 31.0, 3.0)),
+                "gamma_raw": ("Well-being damage (%/\u00B0C)", np.arange(0.0, 31.0, 3.0)),
+                "epsilon": ("CES elasticity \u03B5", np.arange(0.2, 2.1, 0.2)),
+            }
+            if spec_key == "ecological":
+                sens_param_defs["epsilon_cE"] = ("Substitutability \u03B5(c,E)",
+                                                  np.arange(0.05, 2.05, 0.1))
+                sens_param_defs["alpha_cE"] = ("Consumption weight \u03B1(c,E)",
+                                                np.arange(0.1, 0.91, 0.1))
 
         col_x, col_y = st.columns(2)
         with col_x:
@@ -989,8 +1058,12 @@ def main():
                         res_sc = compute_welfare(df_sc, p, spec=spec_key)
                         res_pc = compute_welfare(df_pc, p, spec=spec_key)
                         n = len(res_sc["years"])
-                        ce_grid[i, j] = consumption_equivalent(
-                            res_sc["welfare"], res_pc["welfare"], n, p["r"])
+                        if spec_key == "augmented_gdp":
+                            ce_grid[i, j] = consumption_equivalent_linear(
+                                res_sc["welfare"], res_pc["welfare"])
+                        else:
+                            ce_grid[i, j] = consumption_equivalent(
+                                res_sc["welfare"], res_pc["welfare"], n, p["r"])
                         count += 1
                         progress.progress(count / total)
                 progress.empty()
@@ -1018,7 +1091,7 @@ def main():
                 fig_heat.update_layout(
                     **_plotly_layout(
                         f"Sensitivity: {sens_region} | "
-                        f"{'Additive' if spec_key == 'additive' else 'CES' if spec_key == 'ces' else 'Ecological'}",
+                        f"{'Augmented GDP' if spec_key == 'augmented_gdp' else 'Additive' if spec_key == 'additive' else 'CES' if spec_key == 'ces' else 'Ecological'}",
                         height=550),
                     xaxis_title=x_label,
                     yaxis_title=y_label,
@@ -1122,16 +1195,34 @@ def main():
     # TAB 6: MODEL
     # ────────────────────────────────────────────────────────────
     with tab_model:
-        spec_labels = {"additive": "Additive (Log + CRRA)",
-                       "ces": "CES", "ecological": "Ecological"}
-        st.subheader(f"Welfare Model: {spec_labels[spec_key]}")
+        spec_labels_model = {"augmented_gdp": "Augmented GDP",
+                             "additive": "Additive (Log + CRRA)",
+                             "ces": "CES", "ecological": "Ecological"}
+        st.subheader(f"Welfare Model: {spec_labels_model[spec_key]}")
         st.caption("This documentation updates when you switch specifications in the sidebar.")
 
         st.markdown("---")
 
         # 1. Period Utility
         st.markdown("### 1. Period Utility Function")
-        if spec_key == "additive":
+        if spec_key == "augmented_gdp":
+            st.latex(r"u_t = \hat{c}_t + \frac{\hat{c}_t}{h_t} \cdot \ell_t = \hat{c}_t \cdot \frac{T}{h_t}")
+            st.markdown("""
+This is the **implicit utility function of the augmented-GDP approach** used in GJP.
+
+- $\\hat{c}_t$ = effective (damage-adjusted) consumption
+- $h_t$ = labour hours per year
+- $\\ell_t = T - h_t$ = leisure hours
+- $T$ = total time endowment (fixed at 4,000 hrs/yr)
+- Leisure is valued at the **implied hourly wage** $c/h$ — so a richer person's leisure is worth more
+- **No diminishing returns**: doubling consumption doubles utility
+- **No curvature parameters**: no $\\sigma$, $\\chi$, or $\\varepsilon$ to set
+
+**Limitations:** Linear utility implies that (1) the marginal utility of consumption is constant
+regardless of income level, (2) a dollar of consumption is worth the same to a billionaire
+as to someone in poverty, and (3) leisure time scales proportionally with income.
+""")
+        elif spec_key == "additive":
             st.latex(r"u_t = \ln(\hat{c}_t) + \chi \cdot \frac{\ell_t^{1-\sigma}}{1-\sigma}")
             st.markdown(r"When $\sigma = 1$:  $u_t = \ln(\hat{c}_t) + \chi \cdot \ln(\ell_t)$")
             st.markdown("""
@@ -1213,7 +1304,12 @@ def main():
 
         # 3. Calibration
         st.markdown("### 3. Calibration")
-        if spec_key == "additive":
+        if spec_key == "augmented_gdp":
+            st.markdown("**No calibration needed.** The augmented GDP specification has no free "
+                        "preference parameters — leisure is valued at the implied wage rate "
+                        "$c/h$ directly from the data. The only user-chosen parameters are "
+                        "the discount rate and damage coefficients.")
+        elif spec_key == "additive":
             st.latex(r"\text{MRS} = \chi \cdot c_0 \cdot \ell_0^{-\sigma} = \frac{c_0}{h_0} \quad \Rightarrow \quad \chi = \frac{\ell_0^{\,\sigma}}{h_0}")
             st.markdown(
                 "By default, $\\chi$ is calibrated separately per region from 2025 baseline data. "
@@ -1252,7 +1348,16 @@ def main():
 
         # 5. Consumption Equivalent
         st.markdown("### 5. Consumption Equivalent")
-        st.latex(r"\lambda = \exp\!\left(\frac{W_{SC} - W_{PC}}{\sum_t \beta^t}\right) - 1")
+        if spec_key == "augmented_gdp":
+            st.latex(r"\lambda = \frac{W_{SC}}{W_{PC}} - 1")
+            st.markdown("Since utility is **linear** in consumption, a uniform percentage "
+                        "increase in consumption scales welfare proportionally. "
+                        "The CE is simply the ratio of lifetime welfare levels.")
+        else:
+            st.latex(r"\lambda = \exp\!\left(\frac{W_{SC} - W_{PC}}{\sum_t \beta^t}\right) - 1")
+            st.markdown("For **log-based** utility, the CE uses the exponential form to "
+                        "convert the welfare difference (in log-consumption units) back to "
+                        "a percentage.")
         st.success("**λ > 0:** SC delivers higher welfare. The PC agent would need λ% more "
                    "consumption every year to match SC.\n\n"
                    "**λ < 0:** PC delivers higher welfare.")
@@ -1322,14 +1427,17 @@ def main():
             export_dict = {
                 "Specification": spec_key,
                 "DiscountRate_pct": params["r"],
-                "Sigma_LeisureCRRA": params["sigma"],
                 "TimeEndowment_hrs": params["T"],
                 "OutputDamage_pctPerDegC": params["phi"],
                 "WellbeingDamage_pctPerDegC": params["gamma_raw"],
-                "CES_Epsilon": params["epsilon"],
                 "DamageFunction": params.get("damage_type", "exponential"),
-                "Chi_Override": params.get("chi_override", "calibrated"),
             }
+            if spec_key != "augmented_gdp":
+                export_dict["Sigma_LeisureCRRA"] = params["sigma"]
+            if spec_key in ("additive", "ecological"):
+                export_dict["Chi_Override"] = params.get("chi_override", "calibrated")
+            if spec_key == "ces":
+                export_dict["CES_Epsilon"] = params["epsilon"]
             if spec_key == "ecological":
                 export_dict["Epsilon_cE"] = params.get("epsilon_cE", 0.5)
                 export_dict["Alpha_cE"] = params.get("alpha_cE", 0.5)
