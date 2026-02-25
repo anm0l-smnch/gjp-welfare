@@ -480,12 +480,15 @@ def main():
             "sl_chi": 4.0,
             "sl_epsilon_cE": 0.5,
             "sl_alpha_cE": 0.5,
+            "sl_kappa": 0.133,
         }
         for k, v in _slider_keys.items():
             if k not in st.session_state:
                 st.session_state[k] = v
         if "chi_mode" not in st.session_state:
             st.session_state["chi_mode"] = "Calibrate from 2025 data"
+        if "kappa_mode" not in st.session_state:
+            st.session_state["kappa_mode"] = "Calibrate from \u03B3"
         if "damage_type" not in st.session_state:
             st.session_state["damage_type"] = "Exponential"
 
@@ -493,6 +496,7 @@ def main():
             for k, v in _slider_keys.items():
                 st.session_state[k] = v
             st.session_state["chi_mode"] = "Calibrate from 2025 data"
+            st.session_state["kappa_mode"] = "Calibrate from \u03B3"
             st.session_state["damage_type"] = "Exponential"
 
         r_val = st.slider("Discount rate r (%)", 0.5, 6.0, step=0.1, key="sl_r",
@@ -589,6 +593,32 @@ def main():
             else:
                 st.caption(f"\u03B5(c,E) = {epsilon_cE_val:.2f}: limited substitutability")
 
+            # Kappa control
+            kappa_mode = st.radio("Env. sensitivity \u03BA",
+                                  ["Calibrate from \u03B3", "Set manually"],
+                                  horizontal=True, key="kappa_mode",
+                                  help="Controls how fast environmental quality E degrades with warming. "
+                                       "E = 1/(1 + \u03BA\u00b7\u0394T). "
+                                       "'Calibrate from \u03B3' sets \u03BA = \u03B3/100 to match "
+                                       "Dietrich & Nichols (2025). 'Set manually' lets you explore "
+                                       "alternative calibrations (e.g., from bottom-up damage estimates).")
+            if kappa_mode == "Set manually":
+                kappa_val = st.slider("Env. sensitivity \u03BA",
+                                      0.01, 1.0, step=0.01, key="sl_kappa",
+                                      help="Environmental sensitivity parameter. "
+                                           "At 1\u00b0C: E = 1/(1+\u03BA). "
+                                           "Low (~0.03): health/mortality only. "
+                                           "Medium (~0.13): Dietrich & Nichols. "
+                                           "High (~0.25+): includes ecosystem collapse.")
+                # Show what E looks like at key temperatures
+                E_at_2 = 1.0 / (1.0 + kappa_val * 2.0)
+                E_at_4 = 1.0 / (1.0 + kappa_val * 4.0)
+                st.caption(f"E at 2\u00b0C = {E_at_2:.2f}  |  E at 4\u00b0C = {E_at_4:.2f}")
+            else:
+                kappa_val = None  # will be computed from gamma below
+                _gamma_preview = st.session_state.get("sl_gamma", DEFAULT_PARAMS["gamma_raw"])
+                st.caption(f"\u03BA = \u03B3/100 = {_gamma_preview/100:.4f}")
+
         st.divider()
         st.subheader("Damage Function")
         damage_type_label = st.radio("Damage specification",
@@ -600,14 +630,15 @@ def main():
                                           "\u0394T\u00B2 (DICE-style, Nordhaus).")
         damage_type = damage_type_label.lower()
         if spec_key == "ecological":
+            _kappa_source = "\u03BA = \u03B3/100" if kappa_val is None else f"\u03BA = {kappa_val:.3f} (manual)"
             st.caption("**Ecological mode:** output damage (\u03C6) hits consumption; "
-                       "well-being damage (\u03B3) sets environmental quality \u03BA.")
+                       "\u03BA sets environmental quality degradation.")
             if damage_type == "exponential":
-                st.caption("\u0109 = c \u00B7 exp[\u2013\u03C6\u00B7\u0394T]  |  "
-                           "E = 1 / (1 + \u03BA\u00B7\u0394T),  \u03BA = \u03B3/100")
+                st.caption(f"\u0109 = c \u00B7 exp[\u2013\u03C6\u00B7\u0394T]  |  "
+                           f"E = 1 / (1 + \u03BA\u00B7\u0394T),  {_kappa_source}")
             else:
-                st.caption("\u0109 = c / [1 + \u03C6\u00B7\u0394T\u00B2]  |  "
-                           "E = 1 / (1 + \u03BA\u00B7\u0394T),  \u03BA = \u03B3/100")
+                st.caption(f"\u0109 = c / [1 + \u03C6\u00B7\u0394T\u00B2]  |  "
+                           f"E = 1 / (1 + \u03BA\u00B7\u0394T),  {_kappa_source}")
         else:
             if damage_type == "exponential":
                 st.caption("\u0109 = c \u00B7 exp[\u2013(\u03C6+\u03B3)\u00B7\u0394T]")
@@ -638,7 +669,7 @@ def main():
         if spec_key == "ecological":
             params["epsilon_cE"] = epsilon_cE_val
             params["alpha_cE"] = alpha_cE_val
-            params["kappa"] = calibrate_kappa(gamma_val)
+            params["kappa"] = kappa_val if kappa_val is not None else calibrate_kappa(gamma_val)
 
         st.divider()
         st.subheader("Region")
@@ -817,9 +848,14 @@ def main():
         if spec_key == "ces":
             param_str += f",  \u03B5={params['epsilon']:.1f}"
         if spec_key == "ecological":
+            _kappa_label = f"{params['kappa']:.4f}"
+            if kappa_val is not None:
+                _kappa_label += " (manual)"
+            else:
+                _kappa_label += " (=\u03B3/100)"
             param_str += (f",  \u03B5(c,E)={params['epsilon_cE']:.2f}"
                           f",  \u03B1(c,E)={params['alpha_cE']:.2f}"
-                          f",  \u03BA={params['kappa']:.4f}")
+                          f",  \u03BA={_kappa_label}")
         st.caption(f"Parameters: {param_str}")
 
     # ────────────────────────────────────────────────────────────
@@ -1020,6 +1056,8 @@ def main():
                                                   np.arange(0.05, 2.05, 0.1))
                 sens_param_defs["alpha_cE"] = ("Consumption weight \u03B1(c,E)",
                                                 np.arange(0.1, 0.91, 0.1))
+                sens_param_defs["kappa"] = ("Env. sensitivity \u03BA",
+                                             np.arange(0.03, 0.51, 0.03))
 
         col_x, col_y = st.columns(2)
         with col_x:
@@ -1332,10 +1370,19 @@ as to someone in poverty, and (3) leisure time scales proportionally with income
                         "It can be explored over a range to reveal which assumptions drive the "
                         "scenario ranking.")
             st.markdown("**Environmental sensitivity κ:**")
-            st.latex(r"\kappa = \gamma / 100")
-            st.markdown("Calibrated from the well-being damage coefficient γ so that the marginal "
-                        "welfare loss from environmental degradation at 1°C matches the Dietrich & "
-                        "Nichols evidence.")
+            st.latex(r"\kappa = \gamma / 100 \quad \text{(default calibration)}")
+            st.markdown(
+                "By default, κ is calibrated from the well-being damage coefficient γ so that the marginal "
+                "welfare loss from environmental degradation at 1°C matches the Dietrich & Nichols (2025) "
+                "evidence.\n\n"
+                "Alternatively, κ can be **set manually** to reflect different calibration strategies:\n"
+                "- **κ ≈ 0.03–0.04:** Health/mortality channel only (Carleton et al. 2022)\n"
+                "- **κ ≈ 0.13:** Dietrich & Nichols default (all non-income via subjective well-being)\n"
+                "- **κ ≈ 0.14–0.25:** Bottom-up sum across mortality, mental health, conflict, "
+                "ecosystems, amenity, and other channels\n"
+                "- **κ ≈ 0.38+:** Severe ecosystem-collapse view (anchored at E ≈ 0.4 at 4°C)\n\n"
+                "See *NonIncomeDamages.docx* for the full evidence base."
+            )
 
         st.markdown("---")
 
@@ -1411,7 +1458,7 @@ as to someone in poverty, and (3) leisure time scales proportionally with income
             defaults.append("0.50 (equal weight)")
             symbols.append("\u03BA")
             param_names.append("Environmental sensitivity")
-            defaults.append("\u03B3/100 (calibrated from well-being damage)")
+            defaults.append("\u03B3/100 (calibrated) or manual (0.03\u20130.50)")
         symbols.append("\u2014")
         param_names.append("Damage function")
         defaults.append("Exponential (or Quadratic)")
@@ -1442,6 +1489,7 @@ as to someone in poverty, and (3) leisure time scales proportionally with income
                 export_dict["Epsilon_cE"] = params.get("epsilon_cE", 0.5)
                 export_dict["Alpha_cE"] = params.get("alpha_cE", 0.5)
                 export_dict["Kappa"] = params.get("kappa", 0.1333)
+                export_dict["Kappa_Source"] = "manual" if kappa_val is not None else "gamma/100"
             param_export = pd.DataFrame([export_dict])
             param_export.to_excel(writer, sheet_name="Parameters", index=False)
         st.sidebar.download_button(
