@@ -492,6 +492,26 @@ def main():
         if "damage_type" not in st.session_state:
             st.session_state["damage_type"] = "Exponential"
 
+        # Reset spec-specific sliders to their defaults when switching specs.
+        # Streamlit can show min-of-range for sliders that haven't rendered yet
+        # if the key was only set programmatically. Force correct defaults on
+        # spec change so ecological params don't appear as 0.01/−1.0.
+        _prev_spec = st.session_state.get("_prev_spec", None)
+        if _prev_spec != spec_key:
+            st.session_state["_prev_spec"] = spec_key
+            if spec_key == "ecological":
+                st.session_state["sl_sigma"] = DEFAULT_PARAMS["sigma"]     # 1.0
+                st.session_state["sl_epsilon_cE"] = 0.5
+                st.session_state["sl_alpha_cE"] = 0.5
+                st.session_state["sl_kappa"] = 0.133
+                st.session_state["chi_mode"] = "Calibrate from 2025 data"
+                st.session_state["kappa_mode"] = "Calibrate from \u03B3"
+            elif spec_key == "additive":
+                st.session_state["sl_sigma"] = DEFAULT_PARAMS["sigma"]     # 1.0
+                st.session_state["chi_mode"] = "Calibrate from 2025 data"
+            elif spec_key == "ces":
+                st.session_state["sl_epsilon"] = DEFAULT_PARAMS["epsilon"] # 0.8
+
         def _reset_params():
             for k, v in _slider_keys.items():
                 st.session_state[k] = v
