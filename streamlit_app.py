@@ -93,8 +93,8 @@ def load_data(file_bytes):
         col_map = {}
         for c in df_wide.columns:
             cl = c.lower() if isinstance(c, str) else c
-            if "consumption" in str(cl):
-                col_map[c] = "Consumption"
+            if "income" in str(cl) or "consumption" in str(cl) or "gdp" in str(cl):
+                col_map[c] = "Income"
             elif "labour" in str(cl) or "labor" in str(cl):
                 col_map[c] = "LabourHours"
             elif "temperature" in str(cl) or "temp" in str(cl):
@@ -114,51 +114,51 @@ def param_to_coeff(pct_per_degC):
     return pct_per_degC / 100.0
 
 
-def calibrate_chi(c0, h0, T, sigma):
+def calibrate_chi(y0, h0, T, sigma):
     ell0 = T - h0
     if ell0 <= 0 or h0 <= 0:
         return 0.0
     return (ell0 ** sigma) / h0
 
 
-def effective_consumption(c, delta_T, phi, gamma, damage_type="exponential"):
+def effective_income(y, delta_T, phi, gamma, damage_type="exponential"):
     coeff = phi + gamma
     if damage_type == "quadratic":
         # DICE/Nordhaus-style: convex in ΔT, never hits zero
-        return c / (1.0 + coeff * delta_T ** 2)
-    return c * np.exp(-coeff * delta_T)
+        return y / (1.0 + coeff * delta_T ** 2)
+    return y * np.exp(-coeff * delta_T)
 
 
-def period_utility_additive(c_hat, h, T, sigma, chi):
+def period_utility_additive(y_hat, h, T, sigma, chi):
     ell = T - h
     ell = np.maximum(ell, 1e-6)
-    c_hat = np.maximum(c_hat, 1e-6)
-    u_cons = np.log(c_hat)
+    y_hat = np.maximum(y_hat, 1e-6)
+    u_inc = np.log(y_hat)
     if abs(sigma - 1.0) < 1e-10:
         u_leisure = chi * np.log(ell)
     else:
         u_leisure = chi * (ell ** (1.0 - sigma)) / (1.0 - sigma)
-    return u_cons + u_leisure
+    return u_inc + u_leisure
 
 
-def period_utility_ces(c_hat, h, T, epsilon, alpha):
+def period_utility_ces(y_hat, h, T, epsilon, alpha):
     ell = T - h
     ell = np.maximum(ell, 1e-6)
-    c_hat = np.maximum(c_hat, 1e-6)
+    y_hat = np.maximum(y_hat, 1e-6)
     rho = (epsilon - 1.0) / epsilon
     if abs(rho) < 1e-10:
-        return alpha * np.log(c_hat) + (1 - alpha) * np.log(ell)
-    agg = alpha * (c_hat ** rho) + (1 - alpha) * (ell ** rho)
+        return alpha * np.log(y_hat) + (1 - alpha) * np.log(ell)
+    agg = alpha * (y_hat ** rho) + (1 - alpha) * (ell ** rho)
     agg = np.maximum(agg, 1e-30)
     return np.log(agg) / rho
 
 
-def calibrate_alpha_ces(c0, h0, T, epsilon):
+def calibrate_alpha_ces(y0, h0, T, epsilon):
     ell0 = T - h0
     if ell0 <= 0 or h0 <= 0:
         return 0.5
-    vot = c0 / h0
-    mrs_ratio = vot * (ell0 / c0) ** (1.0 / epsilon)
+    vot = y0 / h0
+    mrs_ratio = vot * (ell0 / y0) ** (1.0 / epsilon)
     return 1.0 / (1.0 + mrs_ratio)
 
 
@@ -168,43 +168,43 @@ def env_quality(delta_T, kappa):
     return 1.0 / (1.0 + kappa * np.maximum(delta_T, 0.0))
 
 
-def effective_consumption_output_only(c, delta_T, phi, damage_type="exponential"):
-    """Effective consumption with OUTPUT damage only (no well-being/amenity damage).
+def effective_income_output_only(y, delta_T, phi, damage_type="exponential"):
+    """Effective income with OUTPUT damage only (no well-being/amenity damage).
     Used in the ecological specification where non-market damages enter via E."""
     if damage_type == "quadratic":
-        return c / (1.0 + phi * delta_T ** 2)
-    return c * np.exp(-phi * delta_T)
+        return y / (1.0 + phi * delta_T ** 2)
+    return y * np.exp(-phi * delta_T)
 
 
-def period_utility_ecological(c_eff, h, E, T, sigma, chi, alpha_cE, epsilon_cE, c_ref=1.0):
-    """Ecological utility: CES composite of (normalized consumption, environment) + CRRA leisure.
+def period_utility_ecological(y_eff, h, E, T, sigma, chi, alpha_cE, epsilon_cE, y_ref=1.0):
+    """Ecological utility: CES composite of (normalized income, environment) + CRRA leisure.
 
-    u = (1/rho) * ln[alpha * c_norm^rho + (1-alpha) * E^rho] + chi * ell^(1-sigma)/(1-sigma)
+    u = (1/rho) * ln[alpha * y_norm^rho + (1-alpha) * E^rho] + chi * ell^(1-sigma)/(1-sigma)
 
-    where c_norm = c_eff / c_ref normalises consumption to be on a comparable scale to E (both ~1),
+    where y_norm = y_eff / y_ref normalises income to be on a comparable scale to E (both ~1),
     and rho = (epsilon_cE - 1) / epsilon_cE controls substitutability.
 
-    Without normalisation, c ~ 50,000 vs E ~ 0.7-1.0, and the CES composite
-    breaks down for rho < 0 (the c^rho term becomes negligible).
+    Without normalisation, y ~ 50,000 vs E ~ 0.7-1.0, and the CES composite
+    breaks down for rho < 0 (the y^rho term becomes negligible).
     """
     ell = T - h
     ell = np.maximum(ell, 1e-6)
-    c_eff = np.maximum(c_eff, 1e-6)
+    y_eff = np.maximum(y_eff, 1e-6)
     E = np.maximum(E, 1e-6)
 
-    # Normalise consumption to be on comparable scale to E
-    c_norm = c_eff / c_ref
+    # Normalise income to be on comparable scale to E
+    y_norm = y_eff / y_ref
 
-    # CES composite of normalised consumption and environment
+    # CES composite of normalised income and environment
     rho = (epsilon_cE - 1.0) / epsilon_cE
     if abs(rho) < 1e-10:
         # Cobb-Douglas limit: rho -> 0
-        u_composite = alpha_cE * np.log(c_norm) + (1.0 - alpha_cE) * np.log(E)
+        u_composite = alpha_cE * np.log(y_norm) + (1.0 - alpha_cE) * np.log(E)
     elif epsilon_cE < 0.02:
         # Near-Leontief: use min
-        u_composite = np.log(np.minimum(c_norm ** alpha_cE, E ** (1.0 - alpha_cE)))
+        u_composite = np.log(np.minimum(y_norm ** alpha_cE, E ** (1.0 - alpha_cE)))
     else:
-        agg = alpha_cE * (c_norm ** rho) + (1.0 - alpha_cE) * (E ** rho)
+        agg = alpha_cE * (y_norm ** rho) + (1.0 - alpha_cE) * (E ** rho)
         agg = np.maximum(agg, 1e-30)
         u_composite = np.log(agg) / rho
 
@@ -217,25 +217,25 @@ def period_utility_ecological(c_eff, h, E, T, sigma, chi, alpha_cE, epsilon_cE, 
     return u_composite + u_leisure
 
 
-def period_utility_augmented_gdp(c_hat, h, T):
-    """Augmented GDP utility: u = c + (c/h) * ell.
+def period_utility_augmented_gdp(y_hat, h, T):
+    """Augmented GDP utility: u = y + (y/h) * ell.
 
-    Linear in consumption and leisure, with leisure valued at the
-    implied wage rate c/h.  Equivalent to u = c * T / h.
+    Linear in income and leisure, with leisure valued at the
+    implied wage rate y/h.  Equivalent to u = y * T / h.
     No diminishing returns — this is the implicit utility of the
     augmented-GDP approach used in GJP.
     """
     ell = T - h
     ell = max(ell, 1e-6)
-    c_hat = max(c_hat, 1e-6)
+    y_hat = max(y_hat, 1e-6)
     h = max(h, 1e-6)
-    return c_hat + (c_hat / h) * ell
+    return y_hat + (y_hat / h) * ell
 
 
-def consumption_equivalent_linear(W_sc, W_pc):
-    """Consumption equivalent for linear (Augmented GDP) utility.
+def income_equivalent_linear(W_sc, W_pc):
+    """Income equivalent for linear (Augmented GDP) utility.
 
-    Since u is linear in c, a uniform % increase in consumption
+    Since u is linear in y, a uniform % increase in income
     scales welfare proportionally: lambda = W_sc / W_pc - 1.
     """
     if abs(W_pc) < 1e-30:
@@ -253,7 +253,7 @@ def calibrate_kappa(gamma_pct):
     return gamma_pct / 100.0
 
 
-def calibrate_alpha_ecological(c0, E0, gamma_pct):
+def calibrate_alpha_ecological(y0, E0, gamma_pct):
     """Calibrate alpha_cE so that at the baseline the share of welfare
     attributed to environment matches the empirical damage evidence.
 
@@ -275,63 +275,63 @@ def compute_welfare(df, params, spec="additive"):
     damage_type = params.get("damage_type", "exponential")
 
     years = df["Year"].values
-    c = df["Consumption"].values
+    y = df["Income"].values
     h = df["LabourHours"].values
     dT_increments = df["TempChange"].values
     dT = np.cumsum(dT_increments)
     n = len(years)
     t_idx = np.arange(n)
 
-    c_no_damage = c.copy()
-    c0, h0 = c[0], h[0]
+    y_no_damage = y.copy()
+    y0, h0 = y[0], h[0]
 
     if spec == "augmented_gdp":
-        # Augmented GDP: u = c + (c/h)*ell — linear, no curvature params
-        c_hat = effective_consumption(c, dT, phi, gamma, damage_type)
+        # Augmented GDP: u = y + (y/h)*ell — linear, no curvature params
+        y_hat = effective_income(y, dT, phi, gamma, damage_type)
         E = None
-        u = np.array([period_utility_augmented_gdp(c_hat[i], h[i], T)
+        u = np.array([period_utility_augmented_gdp(y_hat[i], h[i], T)
                        for i in range(n)])
-        u_no_damage = np.array([period_utility_augmented_gdp(c_no_damage[i], h[i], T)
+        u_no_damage = np.array([period_utility_augmented_gdp(y_no_damage[i], h[i], T)
                                  for i in range(n)])
     elif spec == "ecological":
-        # Ecological: output damage on consumption only; environment enters utility directly
+        # Ecological: output damage on income only; environment enters utility directly
         kappa = params.get("kappa", calibrate_kappa(params["gamma_raw"]))
         alpha_cE = params.get("alpha_cE", 0.5)
         epsilon_cE = params.get("epsilon_cE", 0.5)
         chi_override = params.get("chi_override", None)
-        chi = chi_override if chi_override is not None else calibrate_chi(c0, h0, T, sigma)
+        chi = chi_override if chi_override is not None else calibrate_chi(y0, h0, T, sigma)
 
-        # Only output damage (phi) hits consumption; gamma goes into E
-        c_hat = effective_consumption_output_only(c, dT, phi, damage_type)
+        # Only output damage (phi) hits income; gamma goes into E
+        y_hat = effective_income_output_only(y, dT, phi, damage_type)
         E = env_quality(dT, kappa)
         E_pristine = np.ones(n)  # no damage counterfactual
 
-        # Use baseline consumption as reference for normalisation (c and E on same scale)
-        c_ref = c0
+        # Use baseline income as reference for normalisation (y and E on same scale)
+        y_ref = y0
 
-        u = np.array([period_utility_ecological(c_hat[i], h[i], E[i], T, sigma, chi,
-                                                 alpha_cE, epsilon_cE, c_ref)
+        u = np.array([period_utility_ecological(y_hat[i], h[i], E[i], T, sigma, chi,
+                                                 alpha_cE, epsilon_cE, y_ref)
                        for i in range(n)])
-        u_no_damage = np.array([period_utility_ecological(c_no_damage[i], h[i], E_pristine[i],
-                                                           T, sigma, chi, alpha_cE, epsilon_cE, c_ref)
+        u_no_damage = np.array([period_utility_ecological(y_no_damage[i], h[i], E_pristine[i],
+                                                           T, sigma, chi, alpha_cE, epsilon_cE, y_ref)
                                  for i in range(n)])
     else:
-        # Additive and CES: all damage (phi+gamma) hits consumption
-        c_hat = effective_consumption(c, dT, phi, gamma, damage_type)
+        # Additive and CES: all damage (phi+gamma) hits income
+        y_hat = effective_income(y, dT, phi, gamma, damage_type)
         E = None
 
         if spec == "additive":
             chi_override = params.get("chi_override", None)
-            chi = chi_override if chi_override is not None else calibrate_chi(c0, h0, T, sigma)
-            u = np.array([period_utility_additive(c_hat[i], h[i], T, sigma, chi)
+            chi = chi_override if chi_override is not None else calibrate_chi(y0, h0, T, sigma)
+            u = np.array([period_utility_additive(y_hat[i], h[i], T, sigma, chi)
                            for i in range(n)])
-            u_no_damage = np.array([period_utility_additive(c_no_damage[i], h[i], T, sigma, chi)
+            u_no_damage = np.array([period_utility_additive(y_no_damage[i], h[i], T, sigma, chi)
                                      for i in range(n)])
         else:
-            alpha = calibrate_alpha_ces(c0, h0, T, epsilon)
-            u = np.array([period_utility_ces(c_hat[i], h[i], T, epsilon, alpha)
+            alpha = calibrate_alpha_ces(y0, h0, T, epsilon)
+            u = np.array([period_utility_ces(y_hat[i], h[i], T, epsilon, alpha)
                            for i in range(n)])
-            u_no_damage = np.array([period_utility_ces(c_no_damage[i], h[i], T, epsilon, alpha)
+            u_no_damage = np.array([period_utility_ces(y_no_damage[i], h[i], T, epsilon, alpha)
                                      for i in range(n)])
 
     discount = beta ** t_idx
@@ -345,8 +345,8 @@ def compute_welfare(df, params, spec="additive"):
         "years": years,
         "period_utility": u,
         "period_utility_no_damage": u_no_damage,
-        "effective_consumption": c_hat,
-        "raw_consumption": c,
+        "effective_income": y_hat,
+        "raw_income": y,
         "leisure": T - h,
         "temp_change": dT,
         "discount_factors": discount,
@@ -357,7 +357,7 @@ def compute_welfare(df, params, spec="additive"):
     return result
 
 
-def consumption_equivalent(W_sc, W_pc, n_periods, r):
+def income_equivalent(W_sc, W_pc, n_periods, r):
     beta = 1.0 / (1.0 + r / 100.0)
     annuity = np.sum(beta ** np.arange(n_periods))
     if annuity == 0:
@@ -397,13 +397,13 @@ def compute_world_welfare_popweighted(data, params, spec, method="utilitarian",
 
     n = len(data["SC"][data["SC"]["Region"] == regions[0]]["Year"].unique())
     if spec == "augmented_gdp":
-        ce = consumption_equivalent_linear(scenario_results["SC"]["welfare"],
+        ce = income_equivalent_linear(scenario_results["SC"]["welfare"],
                                             scenario_results["PC"]["welfare"])
     else:
-        ce = consumption_equivalent(scenario_results["SC"]["welfare"],
+        ce = income_equivalent(scenario_results["SC"]["welfare"],
                                      scenario_results["PC"]["welfare"], n, params["r"])
     return {"SC": scenario_results["SC"], "PC": scenario_results["PC"],
-            "consumption_equivalent": ce, "regions": regions}
+            "income_equivalent": ce, "regions": regions}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -451,12 +451,12 @@ def main():
         spec = st.radio("Specification",
                         ["Augmented GDP", "Additive (Log + CRRA)", "CES", "Ecological"],
                         horizontal=True,
-                        help="Augmented GDP: linear u = c + (c/h)·ℓ — no diminishing returns "
+                        help="Augmented GDP: linear u = y + (y/h)·ℓ — no diminishing returns "
                              "(GJP baseline). "
-                             "Additive: log(consumption) + CRRA leisure, separable. "
+                             "Additive: log(income) + CRRA leisure, separable. "
                              "CES: constant-elasticity-of-substitution composite of "
-                             "consumption and leisure. "
-                             "Ecological: CES composite of consumption and environmental "
+                             "income and leisure. "
+                             "Ecological: CES composite of income and environmental "
                              "quality, plus separate CRRA leisure term.")
         if "Augmented" in spec:
             spec_key = "augmented_gdp"
@@ -529,7 +529,7 @@ def main():
             sigma_val = DEFAULT_PARAMS["sigma"]
             epsilon_val = DEFAULT_PARAMS["epsilon"]
             chi_override = None
-            st.caption("Augmented GDP: u = c + (c/h) \u00B7 \u2113.  "
+            st.caption("Augmented GDP: u = y + (y/h) \u00B7 \u2113.  "
                        "No curvature parameters \u2014 only discount rate and damage function apply.")
         elif spec_key == "additive":
             sigma_val = st.slider("Leisure curvature \u03C3", -1.0, 3.0,
@@ -542,9 +542,9 @@ def main():
             chi_mode = st.radio("Leisure weight \u03C7",
                                 ["Calibrate from 2025 data", "Set manually"],
                                 horizontal=True, key="chi_mode",
-                                help="How much utility comes from leisure relative to consumption. "
+                                help="How much utility comes from leisure relative to income. "
                                      "'Calibrate' pins \u03C7 so that the marginal value of "
-                                     "leisure equals the marginal value of consumption at "
+                                     "leisure equals the marginal value of income at "
                                      "baseline hours and income.")
             chi_override = None
             if chi_mode == "Set manually":
@@ -552,14 +552,14 @@ def main():
                                          step=0.1, key="sl_chi",
                                          help="Manual leisure weight. Higher values mean "
                                               "leisure contributes more to welfare relative "
-                                              "to consumption.")
+                                              "to income.")
             else:
                 st.caption("\u03C7 = \u2113\u2080\u1D9E / h\u2080 (calibrated per region)")
         elif spec_key == "ces":
             sigma_val = DEFAULT_PARAMS["sigma"]
             epsilon_val = st.slider("CES elasticity \u03B5", 0.2, 2.0,
                                     step=0.1, key="sl_epsilon",
-                                    help="Elasticity of substitution between consumption and "
+                                    help="Elasticity of substitution between income and "
                                          "leisure. \u03B5 < 1: complements (hard to trade off); "
                                          "\u03B5 = 1: Cobb-Douglas; \u03B5 > 1: substitutes "
                                          "(easy to trade off).")
@@ -576,9 +576,9 @@ def main():
             chi_mode = st.radio("Leisure weight \u03C7",
                                 ["Calibrate from 2025 data", "Set manually"],
                                 horizontal=True, key="chi_mode",
-                                help="How much utility comes from leisure relative to consumption. "
+                                help="How much utility comes from leisure relative to income. "
                                      "'Calibrate' pins \u03C7 so that the marginal value of "
-                                     "leisure equals the marginal value of consumption at "
+                                     "leisure equals the marginal value of income at "
                                      "baseline hours and income.")
             chi_override = None
             if chi_mode == "Set manually":
@@ -586,32 +586,32 @@ def main():
                                          step=0.1, key="sl_chi",
                                          help="Manual leisure weight. Higher values mean "
                                               "leisure contributes more to welfare relative "
-                                              "to consumption.")
+                                              "to income.")
             else:
                 st.caption("\u03C7 = \u2113\u2080\u1D9E / h\u2080 (calibrated per region)")
 
             st.divider()
             st.subheader("Ecological Parameters")
             epsilon_cE_val = st.slider(
-                "Substitutability \u03B5(c,E)",
+                "Substitutability \u03B5(y,E)",
                 0.01, 2.0, step=0.01, key="sl_epsilon_cE",
-                help="Elasticity of substitution between consumption and environment. "
+                help="Elasticity of substitution between income and environment. "
                      "0 = Leontief (no substitution), 1 = Cobb-Douglas, >1 = substitutes.")
             alpha_cE_val = st.slider(
-                "Consumption weight \u03B1(c,E)",
+                "Income weight \u03B1(y,E)",
                 0.1, 0.9, step=0.05, key="sl_alpha_cE",
-                help="Weight on consumption in the CES composite. "
-                     "Higher = consumption matters more; lower = environment matters more.")
+                help="Weight on income in the CES composite. "
+                     "Higher = income matters more; lower = environment matters more.")
 
             # Show interpretation of epsilon_cE
             if epsilon_cE_val < 0.1:
-                st.caption("\u2248 Leontief: welfare \u2248 min(consumption, environment)")
+                st.caption("\u2248 Leontief: welfare \u2248 min(income, environment)")
             elif abs(epsilon_cE_val - 1.0) < 0.05:
                 st.caption("\u2248 Cobb-Douglas: moderate substitutability")
             elif epsilon_cE_val > 1.5:
-                st.caption("High substitutability: consumption can offset env. loss")
+                st.caption("High substitutability: income can offset env. loss")
             else:
-                st.caption(f"\u03B5(c,E) = {epsilon_cE_val:.2f}: limited substitutability")
+                st.caption(f"\u03B5(y,E) = {epsilon_cE_val:.2f}: limited substitutability")
 
             # Kappa control
             kappa_mode = st.radio("Env. sensitivity \u03BA",
@@ -651,28 +651,28 @@ def main():
         damage_type = damage_type_label.lower()
         if spec_key == "ecological":
             _kappa_source = "\u03BA = \u03B3/100" if kappa_val is None else f"\u03BA = {kappa_val:.3f} (manual)"
-            st.caption("**Ecological mode:** output damage (\u03C6) hits consumption; "
+            st.caption("**Ecological mode:** output damage (\u03C6) hits income; "
                        "\u03BA sets environmental quality degradation.")
             if damage_type == "exponential":
-                st.caption(f"\u0109 = c \u00B7 exp[\u2013\u03C6\u00B7\u0394T]  |  "
+                st.caption(f"\u0177 = y \u00B7 exp[\u2013\u03C6\u00B7\u0394T]  |  "
                            f"E = 1 / (1 + \u03BA\u00B7\u0394T),  {_kappa_source}")
             else:
-                st.caption(f"\u0109 = c / [1 + \u03C6\u00B7\u0394T\u00B2]  |  "
+                st.caption(f"\u0177 = y / [1 + \u03C6\u00B7\u0394T\u00B2]  |  "
                            f"E = 1 / (1 + \u03BA\u00B7\u0394T),  {_kappa_source}")
         else:
             if damage_type == "exponential":
-                st.caption("\u0109 = c \u00B7 exp[\u2013(\u03C6+\u03B3)\u00B7\u0394T]")
+                st.caption("\u0177 = y \u00B7 exp[\u2013(\u03C6+\u03B3)\u00B7\u0394T]")
             else:
-                st.caption("\u0109 = c / [1 + (\u03C6+\u03B3)\u00B7\u0394T\u00B2]  (DICE-style)")
+                st.caption("\u0177 = y / [1 + (\u03C6+\u03B3)\u00B7\u0394T\u00B2]  (DICE-style)")
 
         phi_val = st.slider("Output damage (%/\u00B0C)", 0.0, 30.0,
                             step=1.0, key="sl_phi",
                             help="GDP/output loss per degree of warming. "
                                  "Default 12% based on Bilal & K\u00e4nzig (2024). "
-                                 "This reduces effective consumption.")
+                                 "This reduces effective income.")
         gamma_val = st.slider("Well-being damage (%/\u00B0C)", 0.0, 30.0,
                               step=1.0, key="sl_gamma",
-                              help="Non-income welfare loss per degree of warming "
+                              help="Non-market welfare loss per degree of warming "
                                    "(health, amenity, ecosystem services). Default 13.3% "
                                    "based on Dietrich & Nichols (2025). In Additive/CES specs, "
                                    "this adds to \u03C6 in the damage function. In Ecological spec, "
@@ -734,19 +734,19 @@ def main():
         for scenario in ["SC", "PC"]:
             results[scenario]["welfare_no_damage"] = pw_nd[scenario]["welfare"]
             results[scenario]["damage_cost"] = pw_nd[scenario]["welfare"] - pw[scenario]["welfare"]
-        ce = pw["consumption_equivalent"]
+        ce = pw["income_equivalent"]
     else:
         for scenario in ["SC", "PC"]:
             df_r = data[scenario][data[scenario]["Region"] == region].sort_values("Year").reset_index(drop=True)
             results[scenario] = compute_welfare(df_r, params, spec=spec_key)
         n = len(results["SC"]["years"])
         if spec_key == "augmented_gdp":
-            ce = consumption_equivalent_linear(results["SC"]["welfare"],
+            ce = income_equivalent_linear(results["SC"]["welfare"],
                                                results["PC"]["welfare"])
         else:
-            ce = consumption_equivalent(results["SC"]["welfare"], results["PC"]["welfare"],
+            ce = income_equivalent(results["SC"]["welfare"], results["PC"]["welfare"],
                                          n, params["r"])
-    results["consumption_equivalent"] = ce
+    results["income_equivalent"] = ce
 
     # ── Compute all regions (for Regional, Sensitivity, Progress tabs) ──
     all_region_results = []
@@ -760,23 +760,23 @@ def main():
             row[f"{scenario}_welfare"] = res["welfare"]
             row[f"{scenario}_welfare_no_damage"] = res["welfare_no_damage"]
             row[f"{scenario}_damage_cost"] = res["damage_cost"]
-            row[f"{scenario}_avg_cons"] = np.mean(res["raw_consumption"])
+            row[f"{scenario}_avg_inc"] = np.mean(res["raw_income"])
             row[f"{scenario}_avg_leisure"] = np.mean(res["leisure"])
             row[f"{scenario}_terminal_temp"] = res["temp_change"][-1]
             row[f"{scenario}_utility_2025"] = res["period_utility"][0]
             row[f"{scenario}_utility_2100"] = res["period_utility"][-1]
-            row[f"{scenario}_effcons_2025"] = res["effective_consumption"][0]
-            row[f"{scenario}_effcons_2100"] = res["effective_consumption"][-1]
+            row[f"{scenario}_effinc_2025"] = res["effective_income"][0]
+            row[f"{scenario}_effinc_2100"] = res["effective_income"][-1]
             row[f"{scenario}_leisure_2025"] = res["leisure"][0]
             row[f"{scenario}_leisure_2100"] = res["leisure"][-1]
             row[f"{scenario}_temp_2025"] = res["temp_change"][0]
             row[f"{scenario}_temp_2100"] = res["temp_change"][-1]
         n_yr = len(data["SC"][data["SC"]["Region"] == reg]["Year"].unique())
         if spec_key == "augmented_gdp":
-            row["CE_pct"] = consumption_equivalent_linear(
+            row["CE_pct"] = income_equivalent_linear(
                 row.get("SC_welfare", 0), row.get("PC_welfare", 0))
         else:
-            row["CE_pct"] = consumption_equivalent(
+            row["CE_pct"] = income_equivalent(
                 row.get("SC_welfare", 0), row.get("PC_welfare", 0), n_yr, params["r"])
         all_region_results.append(row)
 
@@ -808,31 +808,31 @@ def main():
         col1, col2, col3 = st.columns(3)
         col1.metric("SC Welfare", f"{W_sc:.2f}")
         col2.metric("PC Welfare", f"{W_pc:.2f}")
-        col3.metric("Consumption Equivalent", f"{ce:+.2f}%",
+        col3.metric("Income Equivalent", f"{ce:+.2f}%",
                      delta=f"{'SC' if ce > 0 else 'PC'} preferred")
 
         summary_metrics = [
             "Lifetime Welfare (with damages)",
             "Lifetime Welfare (no damages)",
             "Climate Damage Cost",
-            "Avg Raw Consumption",
-            "Avg Effective Consumption",
+            "Avg Raw Income",
+            "Avg Effective Income",
             "Avg Leisure (hrs/yr)",
             "Terminal Temp Change (\u00B0C)",
         ]
         summary_sc = [
             f"{W_sc:.2f}", f"{W_sc_nd:.2f}",
             f"{results['SC']['damage_cost']:.2f}",
-            f"{np.mean(results['SC']['raw_consumption']):,.0f}",
-            f"{np.mean(results['SC']['effective_consumption']):,.0f}",
+            f"{np.mean(results['SC']['raw_income']):,.0f}",
+            f"{np.mean(results['SC']['effective_income']):,.0f}",
             f"{np.mean(results['SC']['leisure']):,.0f}",
             f"{results['SC']['temp_change'][-1]:.2f}",
         ]
         summary_pc = [
             f"{W_pc:.2f}", f"{W_pc_nd:.2f}",
             f"{results['PC']['damage_cost']:.2f}",
-            f"{np.mean(results['PC']['raw_consumption']):,.0f}",
-            f"{np.mean(results['PC']['effective_consumption']):,.0f}",
+            f"{np.mean(results['PC']['raw_income']):,.0f}",
+            f"{np.mean(results['PC']['effective_income']):,.0f}",
             f"{np.mean(results['PC']['leisure']):,.0f}",
             f"{results['PC']['temp_change'][-1]:.2f}",
         ]
@@ -873,8 +873,8 @@ def main():
                 _kappa_label += " (manual)"
             else:
                 _kappa_label += " (=\u03B3/100)"
-            param_str += (f",  \u03B5(c,E)={params['epsilon_cE']:.2f}"
-                          f",  \u03B1(c,E)={params['alpha_cE']:.2f}"
+            param_str += (f",  \u03B5(y,E)={params['epsilon_cE']:.2f}"
+                          f",  \u03B1(y,E)={params['alpha_cE']:.2f}"
                           f",  \u03BA={_kappa_label}")
         st.caption(f"Parameters: {param_str}")
 
@@ -888,30 +888,30 @@ def main():
         # For ecological spec, show 3x2 grid with env quality; otherwise 2x2
         if spec_key == "ecological":
             fig = make_subplots(rows=3, cols=2,
-                                subplot_titles=("Per-Capita Consumption", "Leisure (hrs/yr)",
+                                subplot_titles=("Per-Capita Income", "Leisure (hrs/yr)",
                                                 "Environmental Quality (E)", "Temperature Change",
                                                 "Period Utility", "Discounted Utility"),
                                 vertical_spacing=0.08, horizontal_spacing=0.08)
             chart_height = 900
         else:
             fig = make_subplots(rows=2, cols=2,
-                                subplot_titles=("Per-Capita Consumption", "Leisure (hrs/yr)",
+                                subplot_titles=("Per-Capita Income", "Leisure (hrs/yr)",
                                                 "Period Utility", "Temperature Change"),
                                 vertical_spacing=0.12, horizontal_spacing=0.08)
             chart_height = 650
 
-        # Consumption
-        fig.add_trace(go.Scatter(x=years, y=results["SC"]["raw_consumption"],
+        # Income
+        fig.add_trace(go.Scatter(x=years, y=results["SC"]["raw_income"],
                                   name="SC (raw)", line=dict(color=COLOUR_SC, width=2.2)),
                       row=1, col=1)
-        fig.add_trace(go.Scatter(x=years, y=results["PC"]["raw_consumption"],
+        fig.add_trace(go.Scatter(x=years, y=results["PC"]["raw_income"],
                                   name="PC (raw)", line=dict(color=COLOUR_PC, width=2.2)),
                       row=1, col=1)
-        fig.add_trace(go.Scatter(x=years, y=results["SC"]["effective_consumption"],
+        fig.add_trace(go.Scatter(x=years, y=results["SC"]["effective_income"],
                                   name="SC (eff.)", line=dict(color=COLOUR_SC_LIGHT, width=1.6, dash="dash"),
                                   showlegend=True),
                       row=1, col=1)
-        fig.add_trace(go.Scatter(x=years, y=results["PC"]["effective_consumption"],
+        fig.add_trace(go.Scatter(x=years, y=results["PC"]["effective_income"],
                                   name="PC (eff.)", line=dict(color=COLOUR_PC_LIGHT, width=1.6, dash="dash"),
                                   showlegend=True),
                       row=1, col=1)
@@ -1000,7 +1000,7 @@ def main():
                                      bgcolor="rgba(255,255,255,0.9)",
                                      bordercolor="#DDDDDD", borderwidth=1, font=dict(size=10))
         fig.update_layout(**layout_opts)
-        fig.update_yaxes(title_text="Consumption (2025 Euro PPP)", row=1, col=1)
+        fig.update_yaxes(title_text="Income (2025 Euro PPP)", row=1, col=1)
         fig.update_yaxes(title_text="Hours", row=1, col=2)
 
         st.plotly_chart(fig, use_container_width=True)
@@ -1021,7 +1021,7 @@ def main():
         } for r in all_region_results])
         st.dataframe(reg_df, use_container_width=True, hide_index=True)
 
-        # Bar chart — Consumption Equivalent (%)
+        # Bar chart — Income Equivalent (%)
         ce_values = [r.get("CE_pct", 0) for r in all_region_results]
         ce_colours = [COLOUR_SC if v >= 0 else COLOUR_PC for v in ce_values]
         fig_reg = go.Figure()
@@ -1035,17 +1035,17 @@ def main():
             showlegend=False,
         ))
         fig_reg.update_layout(
-            **_plotly_layout("Consumption Equivalent by Region (SC vs PC)", height=450),
+            **_plotly_layout("Income Equivalent by Region (SC vs PC)", height=450),
         )
-        fig_reg.update_yaxes(title_text="Consumption Equivalent (%)",
+        fig_reg.update_yaxes(title_text="Income Equivalent (%)",
                              zeroline=True, zerolinewidth=1.5, zerolinecolor="#888888")
         st.plotly_chart(fig_reg, use_container_width=True)
 
         st.info(
-            "**How to read this chart:** The consumption equivalent (CE) measures the "
-            "permanent percentage change in consumption that an individual living under PC "
-            "would need *every year* to be as well off as under SC. A CE of +10% means SC "
-            "delivers the same welfare as PC would if PC\u2019s consumption were permanently "
+            "**How to read this chart:** The income equivalent (IE) measures the "
+            "permanent percentage change in income that an individual living under PC "
+            "would need *every year* to be as well off as under SC. An IE of +10% means SC "
+            "delivers the same welfare as PC would if PC\u2019s income were permanently "
             "raised by 10%. Positive values (teal) indicate SC is welfare-superior; negative "
             "values (coral) would indicate PC is welfare-superior."
         )
@@ -1072,9 +1072,9 @@ def main():
                 "epsilon": ("CES elasticity \u03B5", np.arange(0.2, 2.1, 0.2)),
             }
             if spec_key == "ecological":
-                sens_param_defs["epsilon_cE"] = ("Substitutability \u03B5(c,E)",
+                sens_param_defs["epsilon_cE"] = ("Substitutability \u03B5(y,E)",
                                                   np.arange(0.05, 2.05, 0.1))
-                sens_param_defs["alpha_cE"] = ("Consumption weight \u03B1(c,E)",
+                sens_param_defs["alpha_cE"] = ("Income weight \u03B1(y,E)",
                                                 np.arange(0.1, 0.91, 0.1))
                 sens_param_defs["kappa"] = ("Env. sensitivity \u03BA",
                                              np.arange(0.03, 0.51, 0.03))
@@ -1117,10 +1117,10 @@ def main():
                         res_pc = compute_welfare(df_pc, p, spec=spec_key)
                         n = len(res_sc["years"])
                         if spec_key == "augmented_gdp":
-                            ce_grid[i, j] = consumption_equivalent_linear(
+                            ce_grid[i, j] = income_equivalent_linear(
                                 res_sc["welfare"], res_pc["welfare"])
                         else:
-                            ce_grid[i, j] = consumption_equivalent(
+                            ce_grid[i, j] = income_equivalent(
                                 res_sc["welfare"], res_pc["welfare"], n, p["r"])
                         count += 1
                         progress.progress(count / total)
@@ -1181,10 +1181,10 @@ def main():
                                                  row.get("SC_utility_2100", 0))),
                 "PC Util %": fmt_pct(pct_change(row.get("PC_utility_2025", 0),
                                                  row.get("PC_utility_2100", 0))),
-                "SC Cons %": fmt_pct(pct_change(row.get("SC_effcons_2025", 0),
-                                                 row.get("SC_effcons_2100", 0))),
-                "PC Cons %": fmt_pct(pct_change(row.get("PC_effcons_2025", 0),
-                                                 row.get("PC_effcons_2100", 0))),
+                "SC Inc %": fmt_pct(pct_change(row.get("SC_effinc_2025", 0),
+                                                row.get("SC_effinc_2100", 0))),
+                "PC Inc %": fmt_pct(pct_change(row.get("PC_effinc_2025", 0),
+                                                row.get("PC_effinc_2100", 0))),
                 "SC Leis %": fmt_pct(pct_change(row.get("SC_leisure_2025", 0),
                                                  row.get("SC_leisure_2100", 0))),
                 "PC Leis %": fmt_pct(pct_change(row.get("PC_leisure_2025", 0),
@@ -1197,7 +1197,7 @@ def main():
         # 2x2 bar chart
         metrics = [
             ("Period Utility", "utility", True),
-            ("Effective Consumption", "effcons", True),
+            ("Effective Income", "effinc", True),
             ("Leisure Hours", "leisure", True),
             ("Cumulative Warming", "temp", False),
         ]
@@ -1264,56 +1264,56 @@ def main():
         # 1. Period Utility
         st.markdown("### 1. Period Utility Function")
         if spec_key == "augmented_gdp":
-            st.latex(r"u_t = \hat{c}_t + \frac{\hat{c}_t}{h_t} \cdot \ell_t = \hat{c}_t \cdot \frac{T}{h_t}")
+            st.latex(r"u_t = \hat{y}_t + \frac{\hat{y}_t}{h_t} \cdot \ell_t = \hat{y}_t \cdot \frac{T}{h_t}")
             st.markdown("""
 This is the **implicit utility function of the augmented-GDP approach** used in GJP.
 
-- $\\hat{c}_t$ = effective (damage-adjusted) consumption
+- $\\hat{y}_t$ = effective (damage-adjusted) per-capita income
 - $h_t$ = labour hours per year
 - $\\ell_t = T - h_t$ = leisure hours
 - $T$ = total time endowment (fixed at 4,000 hrs/yr)
-- Leisure is valued at the **implied hourly wage** $c/h$ — so a richer person's leisure is worth more
-- **No diminishing returns**: doubling consumption doubles utility
+- Leisure is valued at the **implied hourly wage** $y/h$ — so a richer person's leisure is worth more
+- **No diminishing returns**: doubling income doubles utility
 - **No curvature parameters**: no $\\sigma$, $\\chi$, or $\\varepsilon$ to set
 
-**Limitations:** Linear utility implies that (1) the marginal utility of consumption is constant
-regardless of income level, (2) a dollar of consumption is worth the same to a billionaire
+**Limitations:** Linear utility implies that (1) the marginal utility of income is constant
+regardless of income level, (2) a dollar of income is worth the same to a billionaire
 as to someone in poverty, and (3) leisure time scales proportionally with income.
 """)
         elif spec_key == "additive":
-            st.latex(r"u_t = \ln(\hat{c}_t) + \chi \cdot \frac{\ell_t^{1-\sigma}}{1-\sigma}")
-            st.markdown(r"When $\sigma = 1$:  $u_t = \ln(\hat{c}_t) + \chi \cdot \ln(\ell_t)$")
+            st.latex(r"u_t = \ln(\hat{y}_t) + \chi \cdot \frac{\ell_t^{1-\sigma}}{1-\sigma}")
+            st.markdown(r"When $\sigma = 1$:  $u_t = \ln(\hat{y}_t) + \chi \cdot \ln(\ell_t)$")
             st.markdown("""
-- $\\hat{c}_t$ = effective (damage-adjusted) consumption
+- $\\hat{y}_t$ = effective (damage-adjusted) per-capita income
 - $\\ell_t = T - h_t$ = leisure hours
 - $\\chi$ = calibrated leisure weight (per region)
 - $\\sigma$ = leisure curvature (CRRA on leisure); $\\sigma > 0$ ⇒ diminishing MU
 """)
         elif spec_key == "ces":
-            st.latex(r"U_t = \left[\alpha \cdot \hat{c}_t^{\,\rho} + (1-\alpha) \cdot \ell_t^{\,\rho}\right]^{1/\rho}")
-            st.latex(r"u_t = \ln(U_t) = \frac{1}{\rho} \ln\!\left[\alpha \cdot \hat{c}_t^{\,\rho} + (1-\alpha) \cdot \ell_t^{\,\rho}\right], \quad \rho = \frac{\varepsilon - 1}{\varepsilon}")
+            st.latex(r"U_t = \left[\alpha \cdot \hat{y}_t^{\,\rho} + (1-\alpha) \cdot \ell_t^{\,\rho}\right]^{1/\rho}")
+            st.latex(r"u_t = \ln(U_t) = \frac{1}{\rho} \ln\!\left[\alpha \cdot \hat{y}_t^{\,\rho} + (1-\alpha) \cdot \ell_t^{\,\rho}\right], \quad \rho = \frac{\varepsilon - 1}{\varepsilon}")
             st.markdown("""
-- $\\varepsilon$ = elasticity of substitution between consumption and leisure
+- $\\varepsilon$ = elasticity of substitution between income and leisure
 - $\\alpha$ = calibrated share parameter
 - $\\varepsilon < 1$: complements  |  $\\varepsilon > 1$: substitutes  |  $\\varepsilon = 1$: Cobb-Douglas
 """)
         else:
-            st.latex(r"u_t = \frac{1}{\rho_{cE}} \ln\!\left[\alpha_{cE} \cdot \hat{c}_t^{\,\rho_{cE}} + (1-\alpha_{cE}) \cdot E_t^{\,\rho_{cE}}\right] + \chi \cdot \frac{\ell_t^{1-\sigma}}{1-\sigma}")
-            st.latex(r"\rho_{cE} = \frac{\varepsilon_{cE} - 1}{\varepsilon_{cE}}")
+            st.latex(r"u_t = \frac{1}{\rho_{yE}} \ln\!\left[\alpha_{yE} \cdot \hat{y}_t^{\,\rho_{yE}} + (1-\alpha_{yE}) \cdot E_t^{\,\rho_{yE}}\right] + \chi \cdot \frac{\ell_t^{1-\sigma}}{1-\sigma}")
+            st.latex(r"\rho_{yE} = \frac{\varepsilon_{yE} - 1}{\varepsilon_{yE}}")
             st.markdown("""
-**Three arguments:** consumption, environment, and leisure.
+**Three arguments:** income, environment, and leisure.
 
-- $\\hat{c}_t$ = effective consumption (output damage **only** — $\\varphi$, not $\\gamma$)
+- $\\hat{y}_t$ = effective income (output damage **only** — $\\varphi$, not $\\gamma$)
 - $E_t$ = environmental quality index (see below)
 - $\\ell_t = T - h_t$ = leisure hours
-- $\\alpha_{cE}$ = weight on consumption in the consumption-environment composite
-- $\\varepsilon_{cE}$ = elasticity of substitution between consumption and environment
+- $\\alpha_{yE}$ = weight on income in the income-environment composite
+- $\\varepsilon_{yE}$ = elasticity of substitution between income and environment
 - $\\chi$, $\\sigma$ = leisure weight and curvature (same as additive)
 
 **Key limiting cases:**
-- $\\varepsilon_{cE} \\to 0$ (Leontief): welfare ≈ min(consumption, environment) — no compensation possible
-- $\\varepsilon_{cE} = 1$ (Cobb-Douglas): moderate substitutability
-- $\\varepsilon_{cE} \\to \\infty$: consumption can fully offset environmental loss
+- $\\varepsilon_{yE} \\to 0$ (Leontief): welfare ≈ min(income, environment) — no compensation possible
+- $\\varepsilon_{yE} = 1$ (Cobb-Douglas): moderate substitutability
+- $\\varepsilon_{yE} \\to \\infty$: income can fully offset environmental loss
 """)
 
         st.markdown("---")
@@ -1323,27 +1323,27 @@ as to someone in poverty, and (3) leisure time scales proportionally with income
         if spec_key == "ecological":
             st.markdown("**In the ecological specification, the two empirical damage channels "
                         "are separated:**")
-            st.markdown("**Channel A — Output damage (hits consumption):**")
-            st.latex(r"\hat{c}_t = c_t \cdot \exp\!\left(-\varphi \cdot \Delta T_t\right) \quad \text{(exponential)}")
-            st.latex(r"\hat{c}_t = \frac{c_t}{1 + \varphi \cdot \Delta T_t^{\,2}} \quad \text{(quadratic)}")
+            st.markdown("**Channel A — Output damage (hits income):**")
+            st.latex(r"\hat{y}_t = y_t \cdot \exp\!\left(-\varphi \cdot \Delta T_t\right) \quad \text{(exponential)}")
+            st.latex(r"\hat{y}_t = \frac{y_t}{1 + \varphi \cdot \Delta T_t^{\,2}} \quad \text{(quadratic)}")
             st.markdown("**Channel B — Non-market well-being damage (enters via E):**")
             st.latex(r"E_t = \frac{1}{1 + \kappa \cdot \Delta T_t}, \qquad \kappa = \gamma / 100")
             st.markdown("""
-- $\\varphi$ = output damage (default 12%/°C, Bilal & Känzig 2024) — only this hits consumption
+- $\\varphi$ = output damage (default 12%/°C, Bilal & Känzig 2024) — only this hits income
 - $\\gamma$ sets $\\kappa$, which controls how fast environmental quality degrades (default 13.3%/°C, Dietrich & Nichols 2025)
 - $E = 1$ at zero warming (pristine); $E \\to 0$ as warming rises
 - Under SC (ΔT ≈ 0.4°C): E ≈ 0.95 — modest degradation
 - Under PC (ΔT ≈ 2.8°C): E ≈ 0.73 — significant degradation
 
-**Why separate?** The Dietrich & Nichols evidence shows that non-income channels (health, mental well-being, amenity) dominate the welfare impact of extreme heat. Routing these through consumption conflates two different mechanisms and assumes unlimited substitutability between consumption and the environment.
+**Why separate?** The Dietrich & Nichols evidence shows that non-market channels (health, mental well-being, amenity) dominate the welfare impact of extreme heat. Routing these through income conflates two different mechanisms and assumes unlimited substitutability between income and the environment.
 """)
         else:
             st.markdown("**Exponential (default):**")
-            st.latex(r"\hat{c}_t = c_t \cdot \exp\!\left(-(\varphi + \gamma) \cdot \Delta T_t\right)")
+            st.latex(r"\hat{y}_t = y_t \cdot \exp\!\left(-(\varphi + \gamma) \cdot \Delta T_t\right)")
             st.markdown("**Quadratic / DICE-style (alternative):**")
-            st.latex(r"\hat{c}_t = \frac{c_t}{1 + (\varphi + \gamma) \cdot \Delta T_t^{\,2}}")
+            st.latex(r"\hat{y}_t = \frac{y_t}{1 + (\varphi + \gamma) \cdot \Delta T_t^{\,2}}")
             st.markdown("""
-- $c_t$ = raw consumption from scenario data
+- $y_t$ = raw per-capita income from scenario data
 - $\\Delta T_t$ = cumulative temperature change (summed from annual increments)
 - $\\varphi$ = output damage (default 12%/°C, Bilal & Känzig 2024)
 - $\\gamma$ = well-being damage (default 13.3%/°C, Dietrich & Nichols 2025)
@@ -1352,11 +1352,11 @@ as to someone in poverty, and (3) leisure time scales proportionally with income
 """)
             if params.get("damage_type") == "quadratic":
                 st.info("**Example (quadratic):** With total damage coeff = 25.3% and ΔT = 2°C: "
-                        "effective consumption = 1 / (1 + 0.253 × 4) ≈ 50% of raw. "
+                        "effective income = 1 / (1 + 0.253 × 4) ≈ 50% of raw. "
                         "At 3°C: ≈ 30% of raw. Damage accelerates with warming.")
             else:
                 st.info("**Example (exponential):** With total damage = 25.3%/°C and ΔT = 2°C: "
-                        "effective consumption = exp(−0.253 × 2) ≈ 60% of raw.")
+                        "effective income = exp(−0.253 × 2) ≈ 60% of raw.")
 
         st.markdown("---")
 
@@ -1365,28 +1365,28 @@ as to someone in poverty, and (3) leisure time scales proportionally with income
         if spec_key == "augmented_gdp":
             st.markdown("**No calibration needed.** The augmented GDP specification has no free "
                         "preference parameters — leisure is valued at the implied wage rate "
-                        "$c/h$ directly from the data. The only user-chosen parameters are "
+                        "$y/h$ directly from the data. The only user-chosen parameters are "
                         "the discount rate and damage coefficients.")
         elif spec_key == "additive":
-            st.latex(r"\text{MRS} = \chi \cdot c_0 \cdot \ell_0^{-\sigma} = \frac{c_0}{h_0} \quad \Rightarrow \quad \chi = \frac{\ell_0^{\,\sigma}}{h_0}")
+            st.latex(r"\text{MRS} = \chi \cdot y_0 \cdot \ell_0^{-\sigma} = \frac{y_0}{h_0} \quad \Rightarrow \quad \chi = \frac{\ell_0^{\,\sigma}}{h_0}")
             st.markdown(
                 "By default, $\\chi$ is calibrated separately per region from 2025 baseline data. "
                 "A key advantage is that $\\chi$ depends only on the time allocation, "
-                "not on consumption levels.\n\n"
+                "not on income levels.\n\n"
                 "Alternatively, $\\chi$ can be set manually to a common value across all regions, "
                 "which imposes identical preferences everywhere."
             )
         elif spec_key == "ces":
-            st.latex(r"\text{MRS} = \frac{1-\alpha}{\alpha}\left(\frac{c_0}{\ell_0}\right)^{1/\varepsilon} = \frac{c_0}{h_0} \quad \Rightarrow \quad \alpha = \frac{1}{1 + (c_0/h_0) \cdot (\ell_0/c_0)^{1/\varepsilon}}")
+            st.latex(r"\text{MRS} = \frac{1-\alpha}{\alpha}\left(\frac{y_0}{\ell_0}\right)^{1/\varepsilon} = \frac{y_0}{h_0} \quad \Rightarrow \quad \alpha = \frac{1}{1 + (y_0/h_0) \cdot (\ell_0/y_0)^{1/\varepsilon}}")
             st.markdown("Calibrated separately per region from 2025 baseline data.")
         else:
             st.markdown("**Leisure weight χ:**")
             st.latex(r"\chi = \frac{\ell_0^{\,\sigma}}{h_0}")
             st.markdown("Same calibration as the additive specification — depends only on time "
-                        "allocation, not consumption levels.")
-            st.markdown("**Consumption-environment weight α(c,E):**")
+                        "allocation, not income levels.")
+            st.markdown("**Income-environment weight α(y,E):**")
             st.markdown("Set directly by the user (default 0.5). This parameter controls the "
-                        "relative importance of consumption vs. environmental quality in welfare. "
+                        "relative importance of income vs. environmental quality in welfare. "
                         "It can be explored over a range to reveal which assumptions drive the "
                         "scenario ranking.")
             st.markdown("**Environmental sensitivity κ:**")
@@ -1413,20 +1413,20 @@ as to someone in poverty, and (3) leisure time scales proportionally with income
 
         st.markdown("---")
 
-        # 5. Consumption Equivalent
-        st.markdown("### 5. Consumption Equivalent")
+        # 5. Income Equivalent
+        st.markdown("### 5. Income Equivalent")
         if spec_key == "augmented_gdp":
             st.latex(r"\lambda = \frac{W_{SC}}{W_{PC}} - 1")
-            st.markdown("Since utility is **linear** in consumption, a uniform percentage "
-                        "increase in consumption scales welfare proportionally. "
-                        "The CE is simply the ratio of lifetime welfare levels.")
+            st.markdown("Since utility is **linear** in income, a uniform percentage "
+                        "increase in income scales welfare proportionally. "
+                        "The IE is simply the ratio of lifetime welfare levels.")
         else:
             st.latex(r"\lambda = \exp\!\left(\frac{W_{SC} - W_{PC}}{\sum_t \beta^t}\right) - 1")
-            st.markdown("For **log-based** utility, the CE uses the exponential form to "
-                        "convert the welfare difference (in log-consumption units) back to "
+            st.markdown("For **log-based** utility, the IE uses the exponential form to "
+                        "convert the welfare difference (in log-income units) back to "
                         "a percentage.")
         st.success("**λ > 0:** SC delivers higher welfare. The PC agent would need λ% more "
-                   "consumption every year to match SC.\n\n"
+                   "income every year to match SC.\n\n"
                    "**λ < 0:** PC delivers higher welfare.")
 
         st.markdown("---")
@@ -1470,11 +1470,11 @@ as to someone in poverty, and (3) leisure time scales proportionally with income
             param_names.insert(1, "CES elasticity")
             defaults.insert(1, "0.8")
         if spec_key == "ecological":
-            symbols.append("\u03B5(c,E)")
-            param_names.append("Consumption-environment substitutability")
+            symbols.append("\u03B5(y,E)")
+            param_names.append("Income-environment substitutability")
             defaults.append("0.50 (limited substitution)")
-            symbols.append("\u03B1(c,E)")
-            param_names.append("Consumption weight in composite")
+            symbols.append("\u03B1(y,E)")
+            param_names.append("Income weight in composite")
             defaults.append("0.50 (equal weight)")
             symbols.append("\u03BA")
             param_names.append("Environmental sensitivity")
@@ -1506,8 +1506,8 @@ as to someone in poverty, and (3) leisure time scales proportionally with income
             if spec_key == "ces":
                 export_dict["CES_Epsilon"] = params["epsilon"]
             if spec_key == "ecological":
-                export_dict["Epsilon_cE"] = params.get("epsilon_cE", 0.5)
-                export_dict["Alpha_cE"] = params.get("alpha_cE", 0.5)
+                export_dict["Epsilon_yE"] = params.get("epsilon_cE", 0.5)
+                export_dict["Alpha_yE"] = params.get("alpha_cE", 0.5)
                 export_dict["Kappa"] = params.get("kappa", 0.1333)
                 export_dict["Kappa_Source"] = "manual" if kappa_val is not None else "gamma/100"
             param_export = pd.DataFrame([export_dict])
